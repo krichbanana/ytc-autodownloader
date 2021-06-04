@@ -7,6 +7,7 @@ import json
 import multiprocessing as mp
 import datetime as dt
 import time
+import traceback
 
 
 downloadmetacmd="./yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
@@ -228,32 +229,46 @@ def rescrape(video_id):
 def invoke_scraper(video_id):
     if not lives_status.get(video_id):
         raise ValueError('invalid video_id')
-    cmdline = downloadmetacmd + "-- " + video_id
-    print(cmdline.split())
-    proc = subprocess.run(cmdline.split(), capture_output=True)
-    with open('outtmp', 'wb') as fp:
-        fp.write(proc.stdout)
-    if len(proc.stdout) == 0:
-        print("scraper error: no stdout! stderr=" + proc.stderr) 
+    try:
+        cmdline = downloadmetacmd + "-- " + video_id
+        print(cmdline.split())
+        proc = subprocess.run(cmdline.split(), capture_output=True)
+        with open('outtmp', 'wb') as fp:
+            fp.write(proc.stdout)
+        if len(proc.stdout) == 0:
+            print("scraper error: no stdout! stderr=" + proc.stderr)
+            return None
+        return json.loads(proc.stdout)
+    except Exception as ex:
+        print("warning: exception thrown during scrape task. printing traceback...")
+        traceback.print_exc()
         return None
-    return json.loads(proc.stdout)
 
 
 def safen_path(s):
-    return s.replace(':', '_').replace('/', '_').replace(' ', '_')[0:100]
+    try:
+        return s.replace(':', '_').replace('/', '_').replace(' ', '_')[0:100]
+    except Exception:
+        print("warning: string safening failed, returning dummy value...")
+        return ""
 
 
 def get_outfile_basename(video_id):
     if not lives_status.get(video_id):
         raise ValueError('invalid video_id')
-    #titlesafe = safen_path(cached_ytmeta[video_id]['title']) #breaks path limits
-    uploadersafe = safen_path(cached_ytmeta[video_id]['uploader'])
-    starttimesafe = "start-" + safen_path(cached_ytmeta[video_id]['live_starttime'])
-    livestatus = lives_status[video_id]
     currtimesafe = "curr-" + safen_path(dt.datetime.utcnow().isoformat(timespec='seconds')) + "_UTC"
-    #basename = "_" + video_id + "_" + uploadersafe + "_" + titlesafe + "_" + livestatus + "_" + starttimesafe + "_" + currtimesafe
-    basename = "_" + video_id + "_" + uploadersafe + "_" + livestatus + "_" + starttimesafe + "_" + currtimesafe
-    return basename
+    try:
+        #titlesafe = safen_path(cached_ytmeta[video_id]['title']) #breaks path limits
+        uploadersafe = safen_path(cached_ytmeta[video_id]['uploader'])
+        starttimesafe = "start-" + safen_path(cached_ytmeta[video_id]['live_starttime'])
+        livestatus = lives_status[video_id]
+        #basename = "_" + video_id + "_" + uploadersafe + "_" + titlesafe + "_" + livestatus + "_" + starttimesafe + "_" + currtimesafe
+        basename = "_" + video_id + "_" + uploadersafe + "_" + livestatus + "_" + starttimesafe + "_" + currtimesafe
+        return basename
+    except Exception:
+        print("warning: basename generation failed, using simpler name")
+        basename = "_" + video_id + "_" + currtimesafe
+        return basename
 
 
 q = mp.SimpleQueue()
@@ -262,19 +277,23 @@ q = mp.SimpleQueue()
 def invoke_downloader(video_id):
     #print('FAKED: invoking for ' + str(video_id))
     #return None #TEMP XXX
-    print('invoking for ' + str(video_id))
-    if not lives_status.get(video_id):
-        raise ValueError('invalid video_id')
-    outfile = get_outfile_basename(video_id)
-    p = mp.Process(target=_invoke_downloader_start, args=(q, video_id, outfile))
-    p.start()
-    time.sleep(0.5) # wait for spawn
-    while not q.empty():
-        (pid, dlpid, vid) = q.get()
-        cached_progress_status[vid] = 'downloading'
-        pids[vid] = (pid, dlpid)
-    persist_meta(video_id)
-    time.sleep(0.5)
+    try:
+        print('invoking for ' + str(video_id))
+        if not lives_status.get(video_id):
+            raise ValueError('invalid video_id')
+        outfile = get_outfile_basename(video_id)
+        p = mp.Process(target=_invoke_downloader_start, args=(q, video_id, outfile))
+        p.start()
+        time.sleep(0.5) # wait for spawn
+        while not q.empty():
+            (pid, dlpid, vid) = q.get()
+            cached_progress_status[vid] = 'downloading'
+            pids[vid] = (pid, dlpid)
+        persist_meta(video_id)
+        time.sleep(0.5)
+    except Exception:
+        print("warning: downloader invocation failed because of an exception. printing traceback...")
+        traceback.print_exc()
 
 
 def check_pid(pid):        
@@ -292,6 +311,7 @@ def _invoke_downloader_start(q, video_id, outfile):
     print("process fork " + str(pid) + " is live, with outfile " + outfile)
     proc = subprocess.Popen(['./downloader-invoker.sh', outfile, video_id])
     q.put((pid, proc.pid, video_id))
+    q.close() # flush
     # Block (hopefully not the main process)
     proc.wait()
     print("process fork " + str(pid) + " has waited")
@@ -376,6 +396,7 @@ if __name__ == '__main__':
         except KeyboardInterrupt:
             raise
         except Exception as exc:
+            os.system('date')
             raise RuntimeError("Exception encountered during main loop processing") from exc
         finally:
             print("number of active children: " + str(len(mp.active_children()))) # side effect: joins finished tasks
