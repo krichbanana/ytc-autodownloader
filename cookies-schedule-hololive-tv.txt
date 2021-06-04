@@ -1,0 +1,3 @@
+# Netscape HTTP Cookie File
+
+schedule.hololive.tv	FALSE	/	FALSE	1915656215	timezone	America/New_York
