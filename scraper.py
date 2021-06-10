@@ -107,9 +107,9 @@ def update_lives_status():
                 if video_id not in lives_status.keys():
                     lives_status[video_id] = 'unknown'
                     cached_progress_status[video_id] = 'unscraped'
-                    print("new live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner)
+                    print("discovery: new live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner)
                 else:
-                    print("known live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner)
+                    print("discovery: known live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner)
 
 
 def persist_meta(video_id):
@@ -240,7 +240,7 @@ def invoke_scraper(video_id):
             return None
         return json.loads(proc.stdout)
     except Exception as ex:
-        print("warning: exception thrown during scrape task. printing traceback...")
+        print("warning: exception thrown during scrape task. printing traceback...", file=sys.stderr)
         traceback.print_exc()
         return None
 
@@ -266,7 +266,7 @@ def get_outfile_basename(video_id):
         basename = "_" + video_id + "_" + uploadersafe + "_" + livestatus + "_" + starttimesafe + "_" + currtimesafe
         return basename
     except Exception:
-        print("warning: basename generation failed, using simpler name")
+        print("warning: basename generation failed, using simpler name", file=sys.stderr)
         basename = "_" + video_id + "_" + currtimesafe
         return basename
 
@@ -292,7 +292,7 @@ def invoke_downloader(video_id):
         persist_meta(video_id)
         time.sleep(0.5)
     except Exception:
-        print("warning: downloader invocation failed because of an exception. printing traceback...")
+        print("warning: downloader invocation failed because of an exception. printing traceback...", file=sys.stderr)
         traceback.print_exc()
 
 
@@ -336,26 +336,26 @@ if __name__ == '__main__':
                 if cached_progress_status[video_id] == 'waiting':
                     invoke_downloader(video_id)
                 elif cached_progress_status[video_id] == 'missed': 
-                    print("missed (possibly cached?): " + video_id)
+                    print("status: missed (possibly cached?): " + video_id)
                 elif cached_progress_status[video_id] == 'invalid': 
-                    print("upload (possibly cached/bogus?): " + video_id)
+                    print("status: upload (possibly cached/bogus?): " + video_id)
                 elif cached_progress_status[video_id] == 'aborted': 
-                    print("aborted (possibly cached/bogus?): " + video_id)
+                    print("status: aborted (possibly cached/bogus?): " + video_id)
                 elif cached_progress_status[video_id] == 'downloading': 
-                    print("downloading (but this is wrong; we just started!): " + video_id)
+                    print("status: downloading (but this is wrong; we just started!): " + video_id)
                     if pids.get(video_id):
                         (pypid, dlpid) = pids[video_id]
                         if not check_pid(dlpid):
                             print("dlpid no longer exists: " + video_id)
                             cached_progress_status[video_id] = 'downloaded'
                             if check_pid(pypid):
-                                print("warning: pypid still exists! (" + str(pypid) + " ): " + video_id )
+                                print("warning: pypid still exists! (" + str(pypid) + " ): " + video_id, file=sys.stderr)
                         else:
-                            print("downloading (apparently, may be bogus): " + video_id)
+                            print("status: downloading (apparently, may be bogus): " + video_id)
                     else:
-                        print("warning: pid lookup for video " + video_id + " failed (initial load, should be unreachable).")
+                        print("warning: pid lookup for video " + video_id + " failed (initial load, should be unreachable).", file=sys.stderr)
                 elif cached_progress_status[video_id] == 'downloaded': 
-                    print("finished (cached?): " + video_id)
+                    print("status: finished (cached?): " + video_id)
         except KeyboardInterrupt:
             raise
         except Exception as exc:
@@ -371,11 +371,11 @@ if __name__ == '__main__':
                 if cached_progress_status[video_id] == 'waiting':
                     invoke_downloader(video_id)
                 elif cached_progress_status[video_id] == 'missed': 
-                    print("missed: " + video_id)
+                    print("status: missed: " + video_id)
                 elif cached_progress_status[video_id] == 'invalid': 
-                    print("upload: " + video_id)
+                    print("status: upload: " + video_id)
                 elif cached_progress_status[video_id] == 'aborted': 
-                    print("aborted: " + video_id)
+                    print("status: aborted: " + video_id)
                 elif cached_progress_status[video_id] == 'downloading': 
                     #TODO: check PID/if process is running
                     if pids.get(video_id):
@@ -384,15 +384,15 @@ if __name__ == '__main__':
                             print("dlpid no longer exists: " + video_id)
                             cached_progress_status[video_id] = 'downloaded'
                             if check_pid(pypid):
-                                print("warning: pypid still exists! (" + str(pypid) + " ): " + video_id )
+                                print("warning: pypid still exists! (" + str(pypid) + " ): " + video_id, file=sys.stderr)
                         else:
-                            print("downloading: " + video_id)
+                            print("status: downloading: " + video_id)
                     else:
-                        print("warning: pid lookup for video " + video_id + " failed.")
+                        print("warning: pid lookup for video " + video_id + " failed.", file=sys.stderr)
                 elif cached_progress_status[video_id] == 'downloaded': 
-                    print("finished: " + video_id)
+                    print("status: finished: " + video_id)
         except KeyError:
-            print("warning: internal inconsistency! squashing KeyError exception...")
+            print("warning: internal inconsistency! squashing KeyError exception...", file=sys.stderr)
         except KeyboardInterrupt:
             raise
         except Exception as exc:
@@ -404,5 +404,6 @@ if __name__ == '__main__':
             print("number of cached progress states: " + str(len(cached_progress_status)))
             print("number of cached ytmeta objects: " + str(len(cached_progress_status)))
             print("number of tracked pid groups: " + str(len(pids)))
+            print(end='', flush=True)
 
 
