@@ -275,8 +275,6 @@ q = mp.SimpleQueue()
 
 
 def invoke_downloader(video_id):
-    #print('FAKED: invoking for ' + str(video_id))
-    #return None #TEMP XXX
     try:
         print('invoking for ' + str(video_id))
         if not lives_status.get(video_id):
@@ -284,7 +282,8 @@ def invoke_downloader(video_id):
         outfile = get_outfile_basename(video_id)
         p = mp.Process(target=_invoke_downloader_start, args=(q, video_id, outfile))
         p.start()
-        time.sleep(0.5) # wait for spawn
+        if not p.is_alive():
+            time.sleep(0.5) # wait for spawn
         while not q.empty():
             (pid, dlpid, vid) = q.get()
             cached_progress_status[vid] = 'downloading'
@@ -307,6 +306,7 @@ def check_pid(pid):
 
 
 def _invoke_downloader_start(q, video_id, outfile):
+    # There is not much use for the python pid, we store the process ID only for debugging
     pid = os.getpid()
     print("process fork " + str(pid) + " is live, with outfile " + outfile)
     proc = subprocess.Popen(['./downloader-invoker.sh', outfile, video_id])
@@ -348,8 +348,7 @@ if __name__ == '__main__':
                         if not check_pid(dlpid):
                             print("dlpid no longer exists: " + video_id)
                             cached_progress_status[video_id] = 'downloaded'
-                            if check_pid(pypid):
-                                print("warning: pypid still exists! (" + str(pypid) + " ): " + video_id, file=sys.stderr)
+                            del pids[video_id]
                         else:
                             print("status: downloading (apparently, may be bogus): " + video_id)
                     else:
@@ -383,8 +382,7 @@ if __name__ == '__main__':
                         if not check_pid(dlpid):
                             print("dlpid no longer exists: " + video_id)
                             cached_progress_status[video_id] = 'downloaded'
-                            if check_pid(pypid):
-                                print("warning: pypid still exists! (" + str(pypid) + " ): " + video_id, file=sys.stderr)
+                            del pids[video_id]
                         else:
                             print("status: downloading: " + video_id)
                     else:
