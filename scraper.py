@@ -274,22 +274,28 @@ def get_outfile_basename(video_id):
 q = mp.SimpleQueue()
 
 
+def process_dlpid_queue():
+    """ Process (empty) the queue of PIDs from newly invoked downloaders and update their state. """
+    while not q.empty():
+        (pid, dlpid, vid) = q.get()
+        cached_progress_status[vid] = 'downloading'
+        pids[vid] = (pid, dlpid)
+        persist_meta(video_id)
+
+
 def invoke_downloader(video_id):
     try:
         print('invoking for ' + str(video_id))
         if not lives_status.get(video_id):
             raise ValueError('invalid video_id')
+        if pids.get(video_id):
+            print("warning: duplicate invocation for video " + video_id + " (according to internal PID state)", file=sys.stderr)
         outfile = get_outfile_basename(video_id)
         p = mp.Process(target=_invoke_downloader_start, args=(q, video_id, outfile))
         p.start()
-        if not p.is_alive():
-            time.sleep(0.5) # wait for spawn
-        while not q.empty():
-            (pid, dlpid, vid) = q.get()
-            cached_progress_status[vid] = 'downloading'
-            pids[vid] = (pid, dlpid)
-        persist_meta(video_id)
+        # Wait for the process to spawn and for the downloader PID to be sent.
         time.sleep(0.5)
+        process_dlpid_queue()   # hopefully just what we just spawned
     except Exception:
         print("warning: downloader invocation failed because of an exception. printing traceback...", file=sys.stderr)
         traceback.print_exc()
@@ -329,6 +335,8 @@ if __name__ == '__main__':
                 if progress is None or progress == 'unscraped':
                     # Try to load missing meta from disk
                     recall_meta(video_id)
+            # Try to make sure downloaders are tracked with correct state
+            process_dlpid_queue()
             # Scrape each video again if needed
             for video_id in lives_status.keys():
                 maybe_rescrape_initially(video_id)
@@ -363,6 +371,8 @@ if __name__ == '__main__':
         try:
             time.sleep(300)
             update_lives_status()
+            # Try to make sure downloaders are tracked with correct state
+            process_dlpid_queue()
             # Scrape each video again if needed
             for video_id in lives_status.keys():
                 maybe_rescrape(video_id)
