@@ -11,6 +11,7 @@ import traceback
 
 
 downloadmetacmd="./yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
+channelscrapecmd="./scrape_channel.sh"
 
 def update_lives():
     os.system('wget -nv --load-cookies=cookies-schedule-hololive-tv.txt https://schedule.hololive.tv/lives -O auto-lives_tz')
@@ -80,8 +81,13 @@ progress_statuses = {'unscraped', 'waiting', 'downloading', 'downloaded', 'misse
 # live_endtime:
 # is_upcoming:
 
-
 def update_lives_status():
+    update_lives_status_holoschedule()
+    update_lives_status_urllist()
+    update_lives_status_channellist()
+
+
+def update_lives_status_holoschedule():
     # Find all sections indicated by a 'day' header
     soup = update_lives()
     allcont = soup.find(id='all')
@@ -110,6 +116,80 @@ def update_lives_status():
                     print("discovery: new live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner)
                 else:
                     print("discovery: known live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner)
+
+
+def update_lives_status_urllist():
+    pass #TODO
+
+
+def update_lives_status_channellist():
+    """ Read channels.txt for a list of channel IDs to process. """
+    try:
+        if os.path.exists("channels.txt"):
+            with open("channels.txt") as channellist:
+                for channel in [x.strip() for x in channellist.readlines()]:
+                    invoke_channel_scraper(channel)
+                    process_channel_videos(channel)
+    except Exception:
+        print("warning: unexpected error with processing channels.txt", file=sys.stderr)
+        traceback.print_exc()
+
+
+def invoke_channel_scraper(channel):
+    """ Scrape the channel for latest videos and batch-fetch meta state. """
+    # Note: some arbitrary limits are set in the helper program that may need tweaking.
+    print("Scraping channel " + channel)
+    os.system(channelscrapecmd + " " + channel)
+    print("Processing channel metadata")
+    with open("channel-cached/" + channel + ".meta.new") as allmeta:
+        metalist = []
+        for jsonres in allmeta.readlines():
+            try:
+                metalist.append(export_rescrape_fields(json.loads(jsonres)))
+            except Exception:
+                print("warning: exception in channel scrape task (corrupt meta?)", file=sys.stderr)
+                traceback.print_exc()
+        for ytmeta in metalist:
+            video_id = ytmeta["id"]
+            if video_id not in cached_ytmeta.keys():
+                cached_ytmeta[video_id] = ytmeta
+            else:
+                print("ignoring ytmeta from channel scrape")
+
+
+def process_channel_videos(channel):
+    """ Read scraped channel video list, proccess each video ID, and persist the meta state. """
+    try:
+        print("Processing channel videos")
+        with open("channel-cached/" + channel + ".url.all") as urls:
+            for video_id in [f.split(" ")[1].strip() for f in urls.readlines()]:
+                # Process each recent video
+                if video_id not in lives_status.keys():
+                    recall_meta(video_id)
+                if video_id not in lives_status.keys():
+                    lives_status[video_id] = 'unknown'
+                    cached_progress_status[video_id] = 'unscraped'
+                    print("discovery: new live listed: " + video_id + " on channel " + channel)
+                else:
+                    print("discovery: known live listed: " + video_id + " on channel " + channel)
+                saved_progress = cached_progress_status[video_id]
+                # process precached meta
+                if video_id not in cached_ytmeta:
+                    # We may be reloading old URLs after a program restart
+                    print("ytmeta cache miss for video " + video_id + " on channel " + channel)
+                    ytmeta = rescrape(video_id)
+                    if ytmeta is None:
+                        # scrape failed
+                        continue
+                    cached_ytmeta[video_id] = ytmeta
+                process_ytmeta(video_id)
+                # Avoid redundant disk flushes (as long as we presume that the title/description/listing status won't change)
+                # I look at this and am confused by the '==' here (and one place elsewhere)...
+                if saved_progress not in {'missed', 'upload'} and saved_progress == cached_progress_status[video_id]:
+                    persist_meta(video_id)
+    except IOError:
+        print("warning: unexpected I/O error when processing channel scrape results", file=sys.stderr)
+        traceback.print_exc()
 
 
 def persist_meta(video_id):
@@ -141,7 +221,7 @@ def recall_meta(video_id):
             try:
                 meta = json.loads(fp.read())
                 valid_meta = meta['status'] in statuses and meta['progress'] in progress_statuses
-            except JSONDecodeError:
+            except json.decoder.JSONDecodeError:
                 valid_meta = False
     if valid_meta:
         lives_status[video_id] = meta['status']
@@ -205,14 +285,10 @@ def maybe_rescrape_initially(video_id):
     persist_meta(video_id)
 
 
-def rescrape(video_id):
-    jsonres = invoke_scraper(video_id)
-    if jsonres == None:
-        # is here ok?
-        cached_progress_status[video_id] = 'aborted'
-        return None
+def export_rescrape_fields(jsonres):
     ytmeta = {}
     ytmeta['raw'] = jsonres
+    ytmeta['id'] = jsonres['id']
     ytmeta['title'] = jsonres['title']
     ytmeta['description'] = jsonres['description']
     ytmeta['duration'] = jsonres['duration']
@@ -224,6 +300,14 @@ def rescrape(video_id):
     ytmeta['live_endtime'] = jsonres['live_endtime']
     ytmeta['is_upcoming'] = jsonres['is_upcoming']
     return ytmeta
+
+def rescrape(video_id):
+    jsonres = invoke_scraper(video_id)
+    if jsonres == None:
+        # is here ok?
+        cached_progress_status[video_id] = 'aborted'
+        return None
+    return export_rescrape_fields(jsonres)
 
 
 def invoke_scraper(video_id):
@@ -325,8 +409,10 @@ def _invoke_downloader_start(q, video_id, outfile):
 
 if __name__ == '__main__':
     #mp.set_start_method('forkserver')
+    print("Updating lives status")
     update_lives_status()
     # Initial load
+    print("Starting initial pass")
     if True:
         try:
             # Populate cache from disk
@@ -367,6 +453,7 @@ if __name__ == '__main__':
             raise
         except Exception as exc:
             raise RuntimeError("Exception encountered during initial load processing") from exc
+    print("Starting main loop")
     while True:
         try:
             time.sleep(300)
