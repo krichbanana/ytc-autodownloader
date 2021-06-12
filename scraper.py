@@ -32,14 +32,15 @@ os.makedirs('chat-logs', exist_ok=True)
 os.makedirs('pid', exist_ok=True)
 
 lives_status = {}
-cached_progress_status = {}
+saved_progress_status = {}
+fresh_progress_status = {}  # migrates to saved after statuses are reported
 cached_ytmeta = {}
 pids = {}
 
 statuses = {'unknown', 'prelive', 'live', 'postlive', 'upload'}
 progress_statuses = {'unscraped', 'waiting', 'downloading', 'downloaded', 'missed', 'invalid', 'aborted'}
 
-# statuses:
+# video statuses:
 # unknown: not yet scraped
 # prelive: scheduled live
 # live: in-progress live
@@ -70,6 +71,7 @@ progress_statuses = {'unscraped', 'waiting', 'downloading', 'downloaded', 'misse
 
 # YTMeta:
 # raw: json output of the yt-dl program
+# id:
 # title:
 # description:
 # duration:
@@ -82,17 +84,20 @@ progress_statuses = {'unscraped', 'waiting', 'downloading', 'downloaded', 'misse
 # is_upcoming:
 
 def update_lives_status():
-    update_lives_status_holoschedule()
-    update_lives_status_urllist()
-    update_lives_status_channellist()
+    with open("discovery.txt", "a") as dlog:
+        update_lives_status_holoschedule(dlog)
+        update_lives_status_urllist(dlog)
+        update_lives_status_channellist(dlog)
 
 
-def update_lives_status_holoschedule():
+def update_lives_status_holoschedule(dlog):
     # Find all sections indicated by a 'day' header
     soup = update_lives()
     allcont = soup.find(id='all')
     allcontchildren = [node for node in allcont.children if len(repr(node)) > 4]
     localdate = ''
+    newlives = 0
+    knownlives = 0
     for child in allcontchildren:
         day = child.find(class_='navbar-text')
         if day:
@@ -112,24 +117,28 @@ def update_lives_status_holoschedule():
                     recall_meta(video_id)
                 if video_id not in lives_status.keys():
                     lives_status[video_id] = 'unknown'
-                    cached_progress_status[video_id] = 'unscraped'
-                    print("discovery: new live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner)
+                    fresh_progress_status[video_id] = 'unscraped'
+                    print("discovery: new live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner, file=dlog)
+                    newlives += 1
                 else:
-                    print("discovery: known live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner)
+                    #print("discovery: known live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner)
+                    knownlives += 1
+    print("discovery: holoschedule: new lives: " + str(newlives))
+    print("discovery: holoschedule: known lives: " + str(knownlives))
 
 
-def update_lives_status_urllist():
+def update_lives_status_urllist(dlog):
     pass #TODO
 
 
-def update_lives_status_channellist():
+def update_lives_status_channellist(dlog):
     """ Read channels.txt for a list of channel IDs to process. """
     try:
         if os.path.exists("channels.txt"):
             with open("channels.txt") as channellist:
                 for channel in [x.strip() for x in channellist.readlines()]:
                     invoke_channel_scraper(channel)
-                    process_channel_videos(channel)
+                    process_channel_videos(channel, dlog)
     except Exception:
         print("warning: unexpected error with processing channels.txt", file=sys.stderr)
         traceback.print_exc()
@@ -157,8 +166,10 @@ def invoke_channel_scraper(channel):
                 print("ignoring ytmeta from channel scrape")
 
 
-def process_channel_videos(channel):
+def process_channel_videos(channel, dlog):
     """ Read scraped channel video list, proccess each video ID, and persist the meta state. """
+    newlives = 0
+    knownlives = 0
     try:
         print("Processing channel videos")
         with open("channel-cached/" + channel + ".url.all") as urls:
@@ -168,11 +179,13 @@ def process_channel_videos(channel):
                     recall_meta(video_id)
                 if video_id not in lives_status.keys():
                     lives_status[video_id] = 'unknown'
-                    cached_progress_status[video_id] = 'unscraped'
-                    print("discovery: new live listed: " + video_id + " on channel " + channel)
+                    fresh_progress_status[video_id] = 'unscraped'
+                    print("discovery: new live listed: " + video_id + " on channel " + channel, file=dlog)
+                    newlives += 1
                 else:
-                    print("discovery: known live listed: " + video_id + " on channel " + channel)
-                saved_progress = cached_progress_status[video_id]
+                    #print("discovery: known live listed: " + video_id + " on channel " + channel, file=dlog)
+                    knownlives += 1
+                saved_progress = fresh_progress_status[video_id]
                 # process precached meta
                 if video_id not in cached_ytmeta:
                     # We may be reloading old URLs after a program restart
@@ -185,14 +198,16 @@ def process_channel_videos(channel):
                 process_ytmeta(video_id)
                 # Avoid redundant disk flushes (as long as we presume that the title/description/listing status won't change)
                 # I look at this and am confused by the '==' here (and one place elsewhere)...
-                if saved_progress not in {'missed', 'upload'} and saved_progress == cached_progress_status[video_id]:
-                    persist_meta(video_id)
+                if saved_progress not in {'missed', 'upload'} and saved_progress != fresh_progress_status[video_id]:
+                    persist_meta(video_id, fresh=True)
     except IOError:
         print("warning: unexpected I/O error when processing channel scrape results", file=sys.stderr)
         traceback.print_exc()
+    print("discovery: holoschedule: new lives on channel " + channel + " : " + str(newlives))
+    print("discovery: holoschedule: known lives on channel " + channel + " : " + str(knownlives))
 
 
-def persist_meta(video_id):
+def persist_meta(video_id, fresh=False):
     if video_id not in lives_status.keys():
         raise ValueError('invalid video_id')
     metafile='by-video-id/' + video_id
@@ -200,9 +215,13 @@ def persist_meta(video_id):
     pidfile='pid/' + video_id
     meta = {}
     meta['status'] = lives_status[video_id]
-    meta['progress'] = cached_progress_status[video_id]
+    # try to use the copy; better to retry than miss downloading
+    if (saved_progress_status.get(video_id) is None) or fresh:
+        meta['progress'] = fresh_progress_status[video_id]
+    else:
+        meta['progress'] = saved_progress_status[video_id]
     if video_id in cached_ytmeta:
-        meta['ytmeta'] = cached_ytmeta[video_id] 
+        meta['ytmeta'] = cached_ytmeta[video_id]
     with open(metafile, 'wb') as fp:
         fp.write(json.dumps(meta, indent=1).encode())
     with open(pidfile, 'wb') as fp:
@@ -225,7 +244,7 @@ def recall_meta(video_id):
                 valid_meta = False
     if valid_meta:
         lives_status[video_id] = meta['status']
-        cached_progress_status[video_id] = meta['progress']
+        fresh_progress_status[video_id] = meta['progress']
         if 'ytmeta' in meta.keys():
             cached_ytmeta[video_id] = meta['ytmeta']
 
@@ -236,29 +255,29 @@ def process_ytmeta(video_id):
     if cached_ytmeta[video_id]['is_upcoming']:
         # note: premieres can also be upcoming but are not livestreams.
         lives_status[video_id] = 'prelive'
-        if cached_progress_status[video_id] == 'unscraped':
-            cached_progress_status[video_id] = 'waiting'
+        if fresh_progress_status[video_id] == 'unscraped':
+            fresh_progress_status[video_id] = 'waiting'
     elif cached_ytmeta[video_id]['is_live']:
         lives_status[video_id] = 'live'
-        if cached_progress_status[video_id] == 'unscraped':
-            cached_progress_status[video_id] = 'waiting'
+        if fresh_progress_status[video_id] == 'unscraped':
+            fresh_progress_status[video_id] = 'waiting'
     elif cached_ytmeta[video_id]['is_livestream'] or cached_ytmeta[video_id]['live_endtime']:
         # note: premieres also have a starttime and endtime
         lives_status[video_id] = 'postlive'
-        if cached_progress_status[video_id] == 'unscraped':
-            cached_progress_status[video_id] = 'missed'
+        if fresh_progress_status[video_id] == 'unscraped':
+            fresh_progress_status[video_id] = 'missed'
     else:
         lives_status[video_id] = 'upload'
-        cached_progress_status[video_id] = 'invalid'
+        fresh_progress_status[video_id] = 'invalid'
 
 
 def maybe_rescrape(video_id):
     if not lives_status.get(video_id):
         raise ValueError('invalid video_id')
-    saved_progress = cached_progress_status[video_id]
-    if cached_progress_status[video_id] in {'unscraped', 'waiting'}:
-        cached_progress_status[video_id] = 'unscraped'
-    if cached_progress_status[video_id] == 'unscraped':
+    saved_progress = fresh_progress_status[video_id]
+    if fresh_progress_status[video_id] in {'unscraped', 'waiting'}:
+        fresh_progress_status[video_id] = 'unscraped'
+    if fresh_progress_status[video_id] == 'unscraped':
         ytmeta = rescrape(video_id)
         if ytmeta is None:
             # scrape failed
@@ -266,23 +285,23 @@ def maybe_rescrape(video_id):
         cached_ytmeta[video_id] = ytmeta
         process_ytmeta(video_id)
         # Avoid redundant disk flushes (as long as we presume that the title/description/listing status won't change)
-        if saved_progress not in {'missed', 'upload'} and saved_progress == cached_progress_status[video_id]:
-            persist_meta(video_id)
+        if saved_progress not in {'missed', 'upload'} and saved_progress != fresh_progress_status[video_id]:
+            persist_meta(video_id, fresh=True)
 
 
 def maybe_rescrape_initially(video_id):
     if not lives_status.get(video_id):
         raise ValueError('invalid video_id')
-    if cached_progress_status[video_id] in {'unscraped', 'waiting', 'downloading'}:
-        cached_progress_status[video_id] = 'unscraped'
-    if cached_progress_status[video_id] == 'unscraped':
+    if fresh_progress_status[video_id] in {'unscraped', 'waiting', 'downloading'}:
+        fresh_progress_status[video_id] = 'unscraped'
+    if fresh_progress_status[video_id] == 'unscraped':
         ytmeta = rescrape(video_id)
         if ytmeta is None:
             # scrape failed
             return
         cached_ytmeta[video_id] = ytmeta
         process_ytmeta(video_id)
-    persist_meta(video_id)
+    persist_meta(video_id, fresh=True)
 
 
 def export_rescrape_fields(jsonres):
@@ -305,7 +324,7 @@ def rescrape(video_id):
     jsonres = invoke_scraper(video_id)
     if jsonres == None:
         # is here ok?
-        cached_progress_status[video_id] = 'aborted'
+        fresh_progress_status[video_id] = 'aborted'
         return None
     return export_rescrape_fields(jsonres)
 
@@ -362,7 +381,7 @@ def process_dlpid_queue():
     """ Process (empty) the queue of PIDs from newly invoked downloaders and update their state. """
     while not q.empty():
         (pid, dlpid, vid) = q.get()
-        cached_progress_status[vid] = 'downloading'
+        fresh_progress_status[vid] = 'downloading'
         pids[vid] = (pid, dlpid)
         persist_meta(video_id)
 
@@ -407,17 +426,70 @@ def _invoke_downloader_start(q, video_id, outfile):
     print("process fork " + str(pid) + " has waited")
 
 
+def process_one_status(video_id, first=False):
+    # Process only on change
+    if fresh_progress_status[video_id] != saved_progress_status.get(video_id):
+        if fresh_progress_status[video_id] == 'waiting':
+            print("status: just invoked: " + video_id, file=statuslog)
+            invoke_downloader(video_id)
+        elif fresh_progress_status[video_id] == 'missed':
+            if first:
+                print("status: missed (possibly cached?): " + video_id, file=statuslog)
+            else:
+                print("status: missed: " + video_id, file=statuslog)
+        elif fresh_progress_status[video_id] == 'invalid':
+            if first:
+                print("status: upload (possibly cached/bogus?): " + video_id, file=statuslog)
+            else:
+                print("status: upload: " + video_id, file=statuslog)
+        elif fresh_progress_status[video_id] == 'aborted':
+            if first:
+                print("status: aborted (possibly cached/bogus?): " + video_id, file=statuslog)
+            else:
+                print("status: aborted: " + video_id, file=statuslog)
+        elif fresh_progress_status[video_id] == 'downloading':
+            if first:
+                print("status: downloading (but this is wrong; we just started!): " + video_id, file=statuslog)
+            if pids.get(video_id):
+                (pypid, dlpid) = pids[video_id]
+                if not check_pid(dlpid):
+                    print("status: dlpid no longer exists: " + video_id, file=statuslog)
+                    fresh_progress_status[video_id] = 'downloaded'
+                    del pids[video_id]
+                    persist_meta(video_id, fresh=True)
+                else:
+                    if first:
+                        print("status: downloading (apparently, may be bogus): " + video_id, file=statuslog)
+                    else:
+                        print("status: downloading: " + video_id, file=statuslog)
+            else:
+                if first:
+                    print("warning: pid lookup for video " + video_id + " failed (initial load, should be unreachable).", file=sys.stderr)
+                else:
+                    print("warning: pid lookup for video " + video_id + " failed.", file=sys.stderr)
+                print("status: unknown: " + video_id, file=statuslog)
+        elif fresh_progress_status[video_id] == 'downloaded':
+            if first:
+                print("status: finished (cached?): " + video_id, file=statuslog)
+            else:
+                print("status: finished: " + video_id, file=statuslog)
+        saved_progress_status[video_id] = fresh_progress_status[video_id]
+
+
 if __name__ == '__main__':
     #mp.set_start_method('forkserver')
-    print("Updating lives status")
+    print("Updating lives status", flush=True)
     update_lives_status()
     # Initial load
-    print("Starting initial pass")
+    print("Starting initial pass", flush=True)
+    with open("discovery.txt", "a") as dlog:
+        print("program started", file=dlog, flush=True)
+    statuslog = open("status.txt", "w")
     if True:
         try:
             # Populate cache from disk
             for video_id in lives_status.keys():
-                progress = cached_progress_status.get(video_id)
+                progress = fresh_progress_status.get(video_id)
                 if progress is None or progress == 'unscraped':
                     # Try to load missing meta from disk
                     recall_meta(video_id)
@@ -427,33 +499,14 @@ if __name__ == '__main__':
             for video_id in lives_status.keys():
                 maybe_rescrape_initially(video_id)
             for video_id in lives_status.keys():
-                if cached_progress_status[video_id] == 'waiting':
-                    invoke_downloader(video_id)
-                elif cached_progress_status[video_id] == 'missed': 
-                    print("status: missed (possibly cached?): " + video_id)
-                elif cached_progress_status[video_id] == 'invalid': 
-                    print("status: upload (possibly cached/bogus?): " + video_id)
-                elif cached_progress_status[video_id] == 'aborted': 
-                    print("status: aborted (possibly cached/bogus?): " + video_id)
-                elif cached_progress_status[video_id] == 'downloading': 
-                    print("status: downloading (but this is wrong; we just started!): " + video_id)
-                    if pids.get(video_id):
-                        (pypid, dlpid) = pids[video_id]
-                        if not check_pid(dlpid):
-                            print("dlpid no longer exists: " + video_id)
-                            cached_progress_status[video_id] = 'downloaded'
-                            del pids[video_id]
-                        else:
-                            print("status: downloading (apparently, may be bogus): " + video_id)
-                    else:
-                        print("warning: pid lookup for video " + video_id + " failed (initial load, should be unreachable).", file=sys.stderr)
-                elif cached_progress_status[video_id] == 'downloaded': 
-                    print("status: finished (cached?): " + video_id)
+                process_one_status(video_id, first=True)
         except KeyboardInterrupt:
+            statuslog.flush()
             raise
         except Exception as exc:
             raise RuntimeError("Exception encountered during initial load processing") from exc
-    print("Starting main loop")
+    statuslog.flush()
+    print("Starting main loop", flush=True)
     while True:
         try:
             time.sleep(300)
@@ -464,31 +517,11 @@ if __name__ == '__main__':
             for video_id in lives_status.keys():
                 maybe_rescrape(video_id)
             for video_id in lives_status.keys():
-                if cached_progress_status[video_id] == 'waiting':
-                    invoke_downloader(video_id)
-                elif cached_progress_status[video_id] == 'missed': 
-                    print("status: missed: " + video_id)
-                elif cached_progress_status[video_id] == 'invalid': 
-                    print("status: upload: " + video_id)
-                elif cached_progress_status[video_id] == 'aborted': 
-                    print("status: aborted: " + video_id)
-                elif cached_progress_status[video_id] == 'downloading': 
-                    #TODO: check PID/if process is running
-                    if pids.get(video_id):
-                        (pypid, dlpid) = pids[video_id]
-                        if not check_pid(dlpid):
-                            print("dlpid no longer exists: " + video_id)
-                            cached_progress_status[video_id] = 'downloaded'
-                            del pids[video_id]
-                        else:
-                            print("status: downloading: " + video_id)
-                    else:
-                        print("warning: pid lookup for video " + video_id + " failed.", file=sys.stderr)
-                elif cached_progress_status[video_id] == 'downloaded': 
-                    print("status: finished: " + video_id)
+                process_one_status(video_id)
         except KeyError:
             print("warning: internal inconsistency! squashing KeyError exception...", file=sys.stderr)
         except KeyboardInterrupt:
+            statuslog.flush()
             raise
         except Exception as exc:
             os.system('date')
@@ -496,9 +529,10 @@ if __name__ == '__main__':
         finally:
             print("number of active children: " + str(len(mp.active_children()))) # side effect: joins finished tasks
             print("number of known lives: " + str(len(lives_status)))
-            print("number of cached progress states: " + str(len(cached_progress_status)))
-            print("number of cached ytmeta objects: " + str(len(cached_progress_status)))
+            print("number of saved progress states: " + str(len(saved_progress_status)))
+            print("number of cached ytmeta objects: " + str(len(cached_ytmeta)))
             print("number of tracked pid groups: " + str(len(pids)))
             print(end='', flush=True)
+            statuslog.flush()
 
 
