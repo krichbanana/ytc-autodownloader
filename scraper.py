@@ -203,8 +203,8 @@ def process_channel_videos(channel, dlog):
     except IOError:
         print("warning: unexpected I/O error when processing channel scrape results", file=sys.stderr)
         traceback.print_exc()
-    print("discovery: holoschedule: new lives on channel " + channel + " : " + str(newlives))
-    print("discovery: holoschedule: known lives on channel " + channel + " : " + str(knownlives))
+    print("discovery: channels list: new lives on channel " + channel + " : " + str(newlives))
+    print("discovery: channels list: known lives on channel " + channel + " : " + str(knownlives))
 
 
 def persist_meta(video_id, fresh=False):
