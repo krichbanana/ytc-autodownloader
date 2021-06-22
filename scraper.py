@@ -414,6 +414,12 @@ def check_pid(pid):
         return True
 
 
+def start_watchdog():
+    """ Ensure the program exits after a top-level exception. """
+    os.system('date')
+    subprocess.Popen(["./watchdog.sh", str(os.getpid())])
+
+
 def _invoke_downloader_start(q, video_id, outfile):
     # There is not much use for the python pid, we store the process ID only for debugging
     pid = os.getpid()
@@ -504,6 +510,7 @@ if __name__ == '__main__':
             statuslog.flush()
             raise
         except Exception as exc:
+            start_watchdog()
             raise RuntimeError("Exception encountered during initial load processing") from exc
     statuslog.flush()
     print("Starting main loop", flush=True)
@@ -524,7 +531,7 @@ if __name__ == '__main__':
             statuslog.flush()
             raise
         except Exception as exc:
-            os.system('date')
+            start_watchdog()
             raise RuntimeError("Exception encountered during main loop processing") from exc
         finally:
             print("number of active children: " + str(len(mp.active_children()))) # side effect: joins finished tasks
