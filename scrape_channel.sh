@@ -36,6 +36,11 @@ url="https://www.youtube.com/channel/$channelbase$suf_allvideos"
 ./yt-dlp/yt-dlp.sh -s -q -j --sleep-requests 0.5 --ignore-no-formats-error --flat-playlist "$url" >"${tmppre}.57"
 jq -r <"${tmppre}.57" .url > "${tmppre}.57.url"
 
+if [[ ! -f "${tmppre}.url" ]]; then
+    echo "(channel scraper) there doesn't seem to be any live or upcoming livestreams"
+    touch "${tmppre}.url"
+fi
+
 # Create an onmilist of urls (with possible duplicates)
 cat "${tmppre}.url" "${tmppre}.57.url" >"${tmppre}.final.url"
 
