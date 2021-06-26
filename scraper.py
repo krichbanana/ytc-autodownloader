@@ -278,7 +278,7 @@ def recall_meta(video_id):
                 meta = json.loads(fp.read())
                 valid_meta = meta['status'] in statuses and meta['progress'] in progress_statuses
 
-            except json.decoder.JSONDecodeError:
+            except (json.decoder.JSONDecodeError, KeyError):
                 valid_meta = False
 
     if valid_meta:
@@ -618,7 +618,8 @@ if __name__ == '__main__':
 
     with open("discovery.txt", "a") as dlog:
         print("program started", file=dlog, flush=True)
-    statuslog = open("status.txt", "w")
+    statuslog = open("status.txt", "a")
+    print("program started", file=statuslog)
 
     if True:
         try:
