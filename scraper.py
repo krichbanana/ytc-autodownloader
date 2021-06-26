@@ -85,9 +85,21 @@ progress_statuses = {'unscraped', 'waiting', 'downloading', 'downloaded', 'misse
 
 def update_lives_status():
     with open("discovery.txt", "a") as dlog:
-        update_lives_status_holoschedule(dlog)
-        update_lives_status_urllist(dlog)
-        update_lives_status_channellist(dlog)
+        try:
+            update_lives_status_holoschedule(dlog)
+        except Exception:
+            print("warning: exception during holoschedule scrape. Network error?")
+            traceback.print_exc()
+        try:
+            update_lives_status_urllist(dlog)
+        except Exception:
+            print("warning: exception during urllist scrape. Network error?")
+            traceback.print_exc()
+        try:
+            update_lives_status_channellist(dlog)
+        except Exception:
+            print("warning: exception during channellist scrape. Network error?")
+            traceback.print_exc()
 
 
 def update_lives_status_holoschedule(dlog):
