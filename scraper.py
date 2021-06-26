@@ -10,6 +10,9 @@ import time
 import traceback
 
 
+# Debug switch
+DISABLE_PERSISTENCE = False
+
 downloadmetacmd = "./yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
 channelscrapecmd = "./scrape_channel.sh"
 
@@ -242,6 +245,12 @@ def persist_meta(video_id, fresh=False):
         raise ValueError('invalid video_id')
 
     metafile = 'by-video-id/' + video_id
+
+    # Debug switch
+    if DISABLE_PERSISTENCE:
+        print('NOT updating ' + metafile)
+        return
+
     print('Updating ' + metafile)
     pidfile = 'pid/' + video_id
     meta = {}
