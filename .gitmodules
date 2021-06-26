@@ -1,3 +1,4 @@
 [submodule "yt-dlp"]
 	path = yt-dlp
 	url = git@github.com:krichbanana/yt-dlp.git
+	branch = experimental
