@@ -15,6 +15,10 @@ rm "${tmppre}.url" 2>/dev/null
 
 url="https://www.youtube.com/channel/$channelbase$suf_futurelives"
 ./yt-dlp/yt-dlp.sh -s -q -j --sleep-requests 0.5 --ignore-no-formats-error --flat-playlist "$url" >"${tmppre}.501"
+ecode=$?
+if [[ "$ecode" != 0 ]]; then
+    echo "(channel scraper) warning: fetch for ${tmppre}.501 exited with error: $ecode" >&2
+fi
 # Extract url fields from a flat playlist
 jq -r <"${tmppre}.501" .url > "${tmppre}.501.url"
 # 5 is arbitrary threshhold
@@ -25,6 +29,10 @@ fi
 
 url="https://www.youtube.com/channel/$channelbase$suf_currentlives"
 ./yt-dlp/yt-dlp.sh -s -q -j --sleep-requests 0.5 --ignore-no-formats-error --flat-playlist "$url" >"${tmppre}.502"
+ecode=$?
+if [[ "$ecode" != 0 ]]; then
+    echo "(channel scraper) warning: fetch for ${tmppre}.502 exited with error: $ecode" >&2
+fi
 jq -r <"${tmppre}.502" .url > "${tmppre}.502.url"
 if [[ "$(wc -l "${tmppre}.502.url" | cut -d ' ' -f 1)" -lt 5 ]]; then
     # likely not redirected
@@ -34,6 +42,10 @@ fi
 # Note that premieres will only show up here.
 url="https://www.youtube.com/channel/$channelbase$suf_allvideos"
 ./yt-dlp/yt-dlp.sh -s -q -j --sleep-requests 0.5 --ignore-no-formats-error --flat-playlist "$url" >"${tmppre}.57"
+ecode=$?
+if [[ "$ecode" != 0 ]]; then
+    echo "(channel scraper) warning: fetch for ${tmppre}.57 exited with error: $ecode" >&2
+fi
 jq -r <"${tmppre}.57" .url > "${tmppre}.57.url"
 
 if [[ ! -f "${tmppre}.url" ]]; then

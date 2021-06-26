@@ -118,7 +118,7 @@ def update_lives_status_holoschedule(dlog):
                 if video_id not in lives_status.keys():
                     lives_status[video_id] = 'unknown'
                     fresh_progress_status[video_id] = 'unscraped'
-                    print("discovery: new live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner, file=dlog)
+                    print("discovery: new live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner, file=dlog, flush=True)
                     newlives += 1
                 else:
                     #print("discovery: known live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner)
@@ -180,7 +180,7 @@ def process_channel_videos(channel, dlog):
                 if video_id not in lives_status.keys():
                     lives_status[video_id] = 'unknown'
                     fresh_progress_status[video_id] = 'unscraped'
-                    print("discovery: new live listed: " + video_id + " on channel " + channel, file=dlog)
+                    print("discovery: new live listed: " + video_id + " on channel " + channel, file=dlog, flush=True)
                     newlives += 1
                 else:
                     #print("discovery: known live listed: " + video_id + " on channel " + channel, file=dlog)
@@ -252,6 +252,8 @@ def recall_meta(video_id):
 def process_ytmeta(video_id):
     if not lives_status.get(video_id):
         raise ValueError('invalid video_id')
+    if video_id not in cached_ytmeta.keys():
+        raise RuntimeError('precondition failed: called process_ytmeta but ytmeta for video_id ' + video_id + ' not found.')
     if cached_ytmeta[video_id]['is_upcoming']:
         # note: premieres can also be upcoming but are not livestreams.
         lives_status[video_id] = 'prelive'
@@ -320,6 +322,7 @@ def export_rescrape_fields(jsonres):
     ytmeta['is_upcoming'] = jsonres['is_upcoming']
     return ytmeta
 
+
 def rescrape(video_id):
     jsonres = invoke_scraper(video_id)
     if jsonres == None:
@@ -345,6 +348,10 @@ def invoke_scraper(video_id):
     except Exception as ex:
         print("warning: exception thrown during scrape task. printing traceback...", file=sys.stderr)
         traceback.print_exc()
+        if proc:
+            print("stdout dump for failed scrape, for video " + video_id + ":", file=sys.stderr)
+            print(proc.stdout, file=sys.stderr)
+            print("end of stdout dump for failed scrape:", file=sys.stderr)
         return None
 
 
@@ -437,22 +444,36 @@ def process_one_status(video_id, first=False):
     if fresh_progress_status[video_id] != saved_progress_status.get(video_id):
         if fresh_progress_status[video_id] == 'waiting':
             print("status: just invoked: " + video_id, file=statuslog)
+            if video_id not in cached_ytmeta.keys():
+                print("warning: cached_ytmeta missing for video " + video_id, file=sys.stderr)
             invoke_downloader(video_id)
         elif fresh_progress_status[video_id] == 'missed':
             if first:
                 print("status: missed (possibly cached?): " + video_id, file=statuslog)
             else:
                 print("status: missed: " + video_id, file=statuslog)
+            try:
+                del cached_ytmeta[video_id]['raw']
+            except KeyError:
+                pass
         elif fresh_progress_status[video_id] == 'invalid':
             if first:
                 print("status: upload (possibly cached/bogus?): " + video_id, file=statuslog)
             else:
                 print("status: upload: " + video_id, file=statuslog)
+            try:
+                del cached_ytmeta[video_id]['raw']
+            except KeyError:
+                pass
         elif fresh_progress_status[video_id] == 'aborted':
             if first:
                 print("status: aborted (possibly cached/bogus?): " + video_id, file=statuslog)
             else:
                 print("status: aborted: " + video_id, file=statuslog)
+            try:
+                del cached_ytmeta[video_id]['raw']
+            except KeyError:
+                pass
         elif fresh_progress_status[video_id] == 'downloading':
             if first:
                 print("status: downloading (but this is wrong; we just started!): " + video_id, file=statuslog)
@@ -463,6 +484,10 @@ def process_one_status(video_id, first=False):
                     fresh_progress_status[video_id] = 'downloaded'
                     del pids[video_id]
                     persist_meta(video_id, fresh=True)
+                    try:
+                        del cached_ytmeta[video_id]['raw']
+                    except KeyError:
+                        pass
                 else:
                     if first:
                         print("status: downloading (apparently, may be bogus): " + video_id, file=statuslog)
@@ -479,7 +504,12 @@ def process_one_status(video_id, first=False):
                 print("status: finished (cached?): " + video_id, file=statuslog)
             else:
                 print("status: finished: " + video_id, file=statuslog)
+                try:
+                    del cached_ytmeta[video_id]['raw']
+                except KeyError:
+                    pass
         saved_progress_status[video_id] = fresh_progress_status[video_id]
+        statuslog.flush()
 
 
 if __name__ == '__main__':
