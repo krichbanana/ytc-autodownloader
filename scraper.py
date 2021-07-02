@@ -215,6 +215,16 @@ def process_channel_videos(channel, dlog):
 
                 saved_progress = fresh_progress_status[video_id]
 
+                FORCE_RESCRAPE = False
+                if not FORCE_RESCRAPE and fresh_progress_status[video_id] in {'downloaded', 'missed', 'invalid'}:
+                    print("ignoring ytmeta for undownloadable/finished download " + video_id + " on channel " + channel)
+                    try:
+                        del cached_ytmeta[video_id]
+                    except KeyError:
+                        pass
+
+                    continue
+
                 # process precached meta
                 if video_id not in cached_ytmeta:
                     # We may be reloading old URLs after a program restart
@@ -262,8 +272,15 @@ def persist_meta(video_id, fresh=False):
     else:
         meta['progress'] = saved_progress_status[video_id]
 
+    # Write ytmeta to a separate file (to avoid slurping large amounts of data)
     if video_id in cached_ytmeta:
-        meta['ytmeta'] = cached_ytmeta[video_id]
+        ytmeta = {}
+        ytmeta['ytmeta'] = cached_ytmeta[video_id]
+        metafileyt = metafile + ".meta"
+
+        print('Updating ' + metafileyt)
+        with open(metafileyt, 'wb') as fp:
+            fp.write(json.dumps(meta, indent=1).encode())
 
     with open(metafile, 'wb') as fp:
         fp.write(json.dumps(meta, indent=1).encode())
@@ -277,8 +294,11 @@ def persist_meta(video_id, fresh=False):
 def recall_meta(video_id):
     # Not cached in memory, look for saved state.
     metafile = 'by-video-id/' + video_id
+    metafileyt = metafile + ".meta"
     valid_meta = os.path.exists(metafile)
+    valid_ytmeta = os.path.exists(metafileyt)
     meta = None
+    ytmeta = None
 
     if valid_meta:
         # Query saved state if not cached
@@ -290,11 +310,31 @@ def recall_meta(video_id):
             except (json.decoder.JSONDecodeError, KeyError):
                 valid_meta = False
 
+        if valid_ytmeta:
+            with open(metafileyt, 'rb') as fp:
+                try:
+                    ytmeta = json.loads(fp.read())
+                    valid_ytmeta = 'ytmeta' in ytmeta
+
+                except (json.decoder.JSONDecodeError, KeyError):
+                    valid_ytmeta = False
+
     if valid_meta:
         lives_status[video_id] = meta['status']
         fresh_progress_status[video_id] = meta['progress']
-        if 'ytmeta' in meta.keys():
+
+        if valid_ytmeta:
+            cached_ytmeta[video_id] = ytmeta['ytmeta']
+
+        # unmigrated (monolithic file) format
+        elif 'ytmeta' in meta.keys():
             cached_ytmeta[video_id] = meta['ytmeta']
+
+            if DISABLE_PERSISTENCE:
+                return
+
+            print('notice: migrating ytmeta in status file to new file right now: ' + metafile)
+            persist_meta(video_id, fresh=True)
 
 
 def process_ytmeta(video_id):
@@ -585,6 +625,7 @@ def process_one_status(video_id, first=False):
                     del cached_ytmeta[video_id]['raw']
                 except KeyError:
                     pass
+
             else:
                 if first:
                     print("status: downloading (apparently, may be bogus): " + video_id, file=statuslog)
