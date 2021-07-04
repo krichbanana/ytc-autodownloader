@@ -227,10 +227,13 @@ def process_channel_videos(channel, dlog):
 
                     continue
 
+                cache_miss = False
+
                 # process precached meta
                 if video_id not in cached_ytmeta:
                     # We may be reloading old URLs after a program restart
                     print("ytmeta cache miss for video " + video_id + " on channel " + channel)
+                    cache_miss = True
                     ytmeta = rescrape(video_id)
                     if ytmeta is None:
                         # scrape failed
@@ -241,7 +244,7 @@ def process_channel_videos(channel, dlog):
 
                 # Avoid redundant disk flushes (as long as we presume that the title/description/listing status won't change)
                 # I look at this and am confused by the '==' here (and one place elsewhere)...
-                if (FORCE_RESCRAPE or saved_progress not in {'missed', 'invalid'}) and saved_progress != fresh_progress_status[video_id]:
+                if cache_miss or (saved_progress not in {'missed', 'invalid'} and saved_progress != fresh_progress_status[video_id]):
                     persist_meta(video_id, fresh=True)
 
     except IOError:
