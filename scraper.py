@@ -241,7 +241,7 @@ def process_channel_videos(channel, dlog):
 
                 # Avoid redundant disk flushes (as long as we presume that the title/description/listing status won't change)
                 # I look at this and am confused by the '==' here (and one place elsewhere)...
-                if saved_progress not in {'missed', 'invalid'} and saved_progress != fresh_progress_status[video_id]:
+                if (FORCE_RESCRAPE or saved_progress not in {'missed', 'invalid'}) and saved_progress != fresh_progress_status[video_id]:
                     persist_meta(video_id, fresh=True)
 
     except IOError:
@@ -415,7 +415,7 @@ def maybe_rescrape_initially(video_id):
     if fresh_progress_status[video_id] in {'unscraped', 'waiting', 'downloading'}:
         fresh_progress_status[video_id] = 'unscraped'
 
-    if fresh_progress_status[video_id] == 'unscraped':
+    if fresh_progress_status[video_id] == 'unscraped' or FORCE_RESCRAPE:
         ytmeta = rescrape(video_id)
         if ytmeta is None:
             # scrape failed
