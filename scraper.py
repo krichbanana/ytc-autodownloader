@@ -448,7 +448,7 @@ def invoke_scraper(video_id):
         with open('outtmp', 'wb') as fp:
             fp.write(proc.stdout)
         if len(proc.stdout) == 0:
-            print("scraper error: no stdout! stderr=" + proc.stderr)
+            print(b"scraper error: no stdout! stderr=" + proc.stderr)
 
             return None
 
