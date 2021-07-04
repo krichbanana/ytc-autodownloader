@@ -8,6 +8,7 @@ import multiprocessing as mp
 import datetime as dt
 import time
 import traceback
+import signal
 
 
 # Debug switch
@@ -678,11 +679,36 @@ def process_one_status(video_id, first=False):
     statuslog.flush()
 
 
+def handle_special_signal(signum, frame):
+    os.makedirs('dump', exist_ok=True)
+
+    with open("dump/lives_status", "w") as fp:
+        fp.write(json.dumps(lives_status).encode())
+
+    with open("dump/saved_progress_status", "w") as fp:
+        fp.write(json.dumps(saved_progress_status).encode())
+
+    with open("dump/fresh_progress_status", "w") as fp:
+        fp.write(json.dumps(fresh_progress_status).encode())
+
+    with open("dump/cached_ytmeta", "w") as fp:
+        fp.write(json.dumps(cached_ytmeta).encode())
+
+    with open("dump/pids", "w") as fp:
+        fp.write(json.dumps(pids).encode())
+
+    with open("dump/staticconfig", "w") as fp:
+        print("FORCE_RESCRAPE=" + str(FORCE_RESCRAPE), file=fp)
+        print("DISABLE_PERSISTENCE=" + str(DISABLE_PERSISTENCE), file=fp)
+
+
 if __name__ == '__main__':
     # Prep storage and persistent state directories
     os.makedirs('by-video-id', exist_ok=True)
     os.makedirs('chat-logs', exist_ok=True)
     os.makedirs('pid', exist_ok=True)
+
+    signal.signal(signal.SIGUSR1, handle_special_signal)
 
     print("Updating lives status", flush=True)
     update_lives_status()
