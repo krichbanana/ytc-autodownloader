@@ -12,6 +12,7 @@ import traceback
 
 # Debug switch
 DISABLE_PERSISTENCE = False
+FORCE_RESCRAPE = False
 
 downloadmetacmd = "./yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
 channelscrapecmd = "./scrape_channel.sh"
@@ -132,7 +133,7 @@ def update_lives_status_holoschedule(dlog):
                 video_id = href[(href.find('v=') + 2):]
 
                 if video_id not in lives_status.keys():
-                    recall_meta(video_id)
+                    recall_meta(video_id, filter_progress=True)
 
                 if video_id not in lives_status.keys():
                     lives_status[video_id] = 'unknown'
@@ -195,6 +196,7 @@ def process_channel_videos(channel, dlog):
     """ Read scraped channel video list, proccess each video ID, and persist the meta state. """
     newlives = 0
     knownlives = 0
+    numignores = {}
 
     try:
         print("Processing channel videos")
@@ -202,7 +204,7 @@ def process_channel_videos(channel, dlog):
             for video_id in [f.split(" ")[1].strip() for f in urls.readlines()]:
                 # Process each recent video
                 if video_id not in lives_status.keys():
-                    recall_meta(video_id)
+                    recall_meta(video_id, filter_progress=True)
 
                 if video_id not in lives_status.keys():
                     lives_status[video_id] = 'unknown'
@@ -215,9 +217,9 @@ def process_channel_videos(channel, dlog):
 
                 saved_progress = fresh_progress_status[video_id]
 
-                FORCE_RESCRAPE = False
-                if not FORCE_RESCRAPE and fresh_progress_status[video_id] in {'downloaded', 'missed', 'invalid'}:
-                    print("ignoring ytmeta for undownloadable/finished download " + video_id + " on channel " + channel)
+                if not FORCE_RESCRAPE and saved_progress in {'downloaded', 'missed', 'invalid', 'aborted'}:
+                    numignores[saved_progress] = numignores.setdefault(saved_progress, 0) + 1
+
                     try:
                         del cached_ytmeta[video_id]
                     except KeyError:
@@ -239,7 +241,7 @@ def process_channel_videos(channel, dlog):
 
                 # Avoid redundant disk flushes (as long as we presume that the title/description/listing status won't change)
                 # I look at this and am confused by the '==' here (and one place elsewhere)...
-                if saved_progress not in {'missed', 'upload'} and saved_progress != fresh_progress_status[video_id]:
+                if saved_progress not in {'missed', 'invalid'} and saved_progress != fresh_progress_status[video_id]:
                     persist_meta(video_id, fresh=True)
 
     except IOError:
@@ -248,6 +250,8 @@ def process_channel_videos(channel, dlog):
 
     print("discovery: channels list: new lives on channel " + channel + " : " + str(newlives))
     print("discovery: channels list: known lives on channel " + channel + " : " + str(knownlives))
+    for progress, count in numignores.items():
+        print("discovery: channels list: skipped ytmeta fetches on channel " + channel + " : " + str(count) + " skipped due to progress state '" + progress + "'")
 
 
 def persist_meta(video_id, fresh=False):
@@ -280,7 +284,7 @@ def persist_meta(video_id, fresh=False):
 
         print('Updating ' + metafileyt)
         with open(metafileyt, 'wb') as fp:
-            fp.write(json.dumps(meta, indent=1).encode())
+            fp.write(json.dumps(ytmeta, indent=1).encode())
 
     with open(metafile, 'wb') as fp:
         fp.write(json.dumps(meta, indent=1).encode())
@@ -291,7 +295,11 @@ def persist_meta(video_id, fresh=False):
             fp.write(str(pids[video_id][1]).encode())
 
 
-def recall_meta(video_id):
+def recall_meta(video_id, filter_progress=False):
+    """ Read status, progress for video_id.
+        If filter_progress is set to True, avoid ytmeta loads for certain progress states,
+        unless unconditional rescraping is set.
+    """
     # Not cached in memory, look for saved state.
     metafile = 'by-video-id/' + video_id
     metafileyt = metafile + ".meta"
@@ -299,9 +307,10 @@ def recall_meta(video_id):
     valid_ytmeta = os.path.exists(metafileyt)
     meta = None
     ytmeta = None
+    should_ignore = False
 
     if valid_meta:
-        # Query saved state if not cached
+        # Query saved state if it is not loaded
         with open(metafile, 'rb') as fp:
             try:
                 meta = json.loads(fp.read())
@@ -310,7 +319,12 @@ def recall_meta(video_id):
             except (json.decoder.JSONDecodeError, KeyError):
                 valid_meta = False
 
-        if valid_ytmeta:
+        # Reduce memory usage by not loading ytmeta for undownloadable videos
+        if filter_progress:
+            should_ignore = meta['progress'] in {'unscraped', 'waiting'}
+
+        # note: FORCE_RESCRAPE might clobber old ytmeta if not loaded (bad if the video drastically changes or goes unavailable)
+        if valid_ytmeta and not should_ignore:
             with open(metafileyt, 'rb') as fp:
                 try:
                     ytmeta = json.loads(fp.read())
@@ -320,10 +334,11 @@ def recall_meta(video_id):
                     valid_ytmeta = False
 
     if valid_meta:
+        # Commit status to runtime tracking (else we would discard it here)
         lives_status[video_id] = meta['status']
         fresh_progress_status[video_id] = meta['progress']
 
-        if valid_ytmeta:
+        if valid_ytmeta and not should_ignore:
             cached_ytmeta[video_id] = ytmeta['ytmeta']
 
         # unmigrated (monolithic file) format
@@ -335,6 +350,12 @@ def recall_meta(video_id):
 
             print('notice: migrating ytmeta in status file to new file right now: ' + metafile)
             persist_meta(video_id, fresh=True)
+
+            if should_ignore:
+                try:
+                    del cached_ytmeta[video_id]
+                except KeyError:
+                    pass
 
 
 def process_ytmeta(video_id):
@@ -383,7 +404,7 @@ def maybe_rescrape(video_id):
         process_ytmeta(video_id)
 
         # Avoid redundant disk flushes (as long as we presume that the title/description/listing status won't change)
-        if saved_progress not in {'missed', 'upload'} and saved_progress != fresh_progress_status[video_id]:
+        if saved_progress not in {'missed', 'invalid'} and saved_progress != fresh_progress_status[video_id]:
             persist_meta(video_id, fresh=True)
 
 
