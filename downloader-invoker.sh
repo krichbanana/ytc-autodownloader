@@ -116,6 +116,12 @@ run_chat_downloader_waiting() {
             fi
         fi
 
+        if grep -qF 'Finished retrieving chat replay' "chat-logs/${outname?}.stderr"; then
+            echo "(downloader) warning: Chat replay detected, breaking out of here; fix this." >&2
+            write_status "missed/bug" "${vid?}"
+            break;
+        fi
+
         echo '(downloader)' "Retrying chat downloader for video ${vid?}"
         run_chat_downloader "chat-logs/${outname?}" "${vid?}";
         sleep 60;
