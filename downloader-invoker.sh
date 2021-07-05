@@ -10,6 +10,15 @@ chatlessvideo_maxretries=10080      # minutes in 1 week
 # Time until next scraper call (NYI)
 nextcheck=0
 
+got_sigint=0
+
+handle_sigint() {
+    got_sigint=1
+    echo '(downloader) SIGINT trapped' >&2
+}
+
+trap 'handle_sigint' INT
+
 compress_lzip() {
     local filename="${1?}"
     lzip -9 "${filename?}"
@@ -54,6 +63,13 @@ certify_finished() {
 check_status() {
     local outname="${1:?}";
     local vid="${2:?}";
+
+    if ((got_sigint)); then
+        echo '(downloader) not retrying due to SIGINT'
+        # break any retry loop
+        return $EXIT_TRUE
+    fi
+
     test -s "${outname?}.stdout" || test -s "chat-logs/${outname?}.stdout"
     if [[ $? == 0 ]]; then
         certify_finished "${vid?}"
@@ -124,6 +140,12 @@ run_chat_downloader_waiting() {
 
         echo '(downloader)' "Retrying chat downloader for video ${vid?}"
         run_chat_downloader "chat-logs/${outname?}" "${vid?}";
+
+        if ((got_sigint)); then
+            echo '(downloader) not retrying due to SIGINT'
+            break;
+        fi
+
         sleep 60;
     done
 
