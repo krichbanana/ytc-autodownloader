@@ -329,7 +329,7 @@ def recall_meta(video_id, filter_progress=False):
 
         # Reduce memory usage by not loading ytmeta for undownloadable videos
         if filter_progress:
-            should_ignore = meta['progress'] in {'unscraped', 'waiting'}
+            should_ignore = meta['progress'] in {'downloaded', 'missed', 'invalid', 'aborted'}
 
         # note: FORCE_RESCRAPE might clobber old ytmeta if not loaded (bad if the video drastically changes or goes unavailable)
         if valid_ytmeta and not should_ignore:
