@@ -28,7 +28,7 @@ run_chat_downloader() {
     local outname="${1?}";
     local vid="${2?}";
     local pid=$$
-    { chat_downloader -o "${outname?}".json --message_groups "all" --indent 2 -- "${vid?}" > "${outname?}".stdout; echo $? > exval."$pid"; } 2>&1 | tee "${outname?}.stderr"
+    { chat_downloader -o "${outname?}".json --message_groups "all" --indent 2 -- "${vid?}" >> "${outname?}".stdout; echo $? > exval."$pid"; } 2>&1 | tee "${outname?}.stderr"
     local exval="$(<"exval.$pid")"
     if [[ "$exval" != 0 ]]; then
         echo "(downloader) chat_downloader exited with exit status $exval" >&2
@@ -54,7 +54,7 @@ certify_finished() {
 check_status() {
     local outname="${1:?}";
     local vid="${2:?}";
-    test -s "${outname?}.stdout"
+    test -s "${outname?}.stdout" || test -s "chat-logs/${outname?}.stdout"
     if [[ $? == 0 ]]; then
         certify_finished "${vid?}"
         if [[ $? == 0 ]]; then
