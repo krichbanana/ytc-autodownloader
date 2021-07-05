@@ -64,8 +64,9 @@ check_status() {
 }
 
 write_status() {
-    local status="${1?}"
-    local vid="${2?}"
+    local status="${1:?}"
+    local vid="${2:?}"
+    echo "${status?}" > "by-video-id/${vid?}.status"
 }
 
 run_chat_downloader_waiting() {
