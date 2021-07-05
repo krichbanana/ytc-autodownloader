@@ -2,8 +2,8 @@
 
 # Apr 28, 2021
 
-privatevideo_maxretries=1440        # minutes in 1 day
-membersonlyvideo_maxretries=1440    # minutes in 1 day
+privatevideo_maxretries=720         # minutes in 12 hours
+membersonlyvideo_maxretries=720     # minutes in 12 hours
 other_maxretries=1440               # minutes in 1 day
 chatlessvideo_maxretries=10080      # minutes in 1 week
 
@@ -38,24 +38,43 @@ run_chat_downloader() {
 
 readonly EXIT_TRUE=0
 readonly EXIT_FALSE=1
-readonly EXIT_BADARG=1
+readonly EXIT_BADARG=2
 
 certify_finished() {
     local vid="${1?}";
-    local code="$(./yt-dlp/yt-dlp.sh -q -s --ignore-no-formats-error "${vid?}" --print '%(is_live|0)d%(is_upcoming|0)d')"
+    local code="$(./yt-dlp/yt-dlp.sh -q -s --ignore-no-formats-error --print '%(is_live|0)d%(is_upcoming|0)d' -- "${vid?}")"
     if [[ "$code" == "00" ]]; then
         return $EXIT_TRUE
     else
-        echo "(downloader) certify_finished says we aren't finished!" >&2
+        echo "(downloader) certify_finished says we aren't finished! L/U code=$code" >&2
         return $EXIT_FALSE
     fi
+}
+
+check_status() {
+    test -s "${outname?}.stdout"
+    if [[ $? == 0 ]]; then
+        certify_finished "${vid?}"
+        if [[ $? == 0 ]]; then
+            return $EXIT_TRUE
+        fi
+    fi
+
+    return $EXIT_FALSE
+}
+
+write_status() {
+    local status="${1?}"
+    local vid="${2?}"
 }
 
 run_chat_downloader_waiting() {
     local outname="${1:?}";
     local vid="${2:?}";
     local failures=0
+
     run_chat_downloader "chat-logs/${outname?}" "${vid?}";
+
     until test -s "${outname?}.stdout" || certify_finished "${vid?}"; do
         # Likely broken by localization
         if grep -qF 'Private video' "chat-logs/${outname?}.stderr"; then
@@ -63,7 +82,7 @@ run_chat_downloader_waiting() {
             ((++failures))
             if ((failures > privatevideo_maxretries)); then
                 echo "(downloader) giving up" >&2
-                echo "aborted" > "by-video-id/${vid?}"
+                write_status "aborted" "${vid?}"
                 exit $EXIT_FALSE
             fi
         elif grep -qF 'Members-only content' "chat-logs/${outname?}.stderr"; then
@@ -71,7 +90,7 @@ run_chat_downloader_waiting() {
             ((++failures))
             if ((failures > membersonlyvideo_maxretries)); then
                 echo "(downloader) giving up" >&2
-                echo "aborted" > "by-video-id/${vid?}"
+                write_status "aborted" "${vid?}"
                 exit $EXIT_FALSE
             fi
         elif grep -qF 'video has been removed' "chat-logs/${outname?}.stderr"; then
@@ -82,22 +101,31 @@ run_chat_downloader_waiting() {
             ((++failures))
             if ((failures > chatlessvideo_maxretries)); then
                 echo "(downloader) giving up" >&2
-                echo "aborted" > "by-video-id/${vid?}"
+                write_status "aborted" "${vid?}"
                 exit $EXIT_FALSE
             fi
         else
             ((++failures))
             if ((failures > other_maxretries)); then
                 echo "(downloader) giving up" >&2
-                echo "aborted" > "by-video-id/${vid?}"
+                write_status "aborted" "${vid?}"
                 exit $EXIT_FALSE
             fi
         fi
+
         echo '(downloader)' "Retrying chat downloader for video ${vid?}"
         run_chat_downloader "chat-logs/${outname?}" "${vid?}";
         sleep 60;
     done
+
+    if grep -qF 'does not have a chat replay' "chat-logs/${outname?}.stderr"; then
+        echo "(downloader) Disabled chat replay detected, giving up" >&2
+        write_status "missed" "${vid?}"
+        exit $EXIT_FALSE
+    fi
+
     echo '(downloader)' "Finished downloading chat for video ${vid?}"
+
     cd chat-logs
     compress "${outname?}".json
     compress "${outname?}".stdout
