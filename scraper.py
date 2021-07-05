@@ -285,9 +285,13 @@ def persist_meta(video_id, fresh=False):
         ytmeta = {}
         ytmeta['ytmeta'] = cached_ytmeta[video_id]
         metafileyt = metafile + ".meta"
+        metafileyt_status = metafileyt + "." + lives_status[video_id]
 
         print('Updating ' + metafileyt)
         with open(metafileyt, 'wb') as fp:
+            fp.write(json.dumps(ytmeta, indent=1).encode())
+        print('Updating ' + metafileyt_status)
+        with open(metafileyt_status, 'wb') as fp:
             fp.write(json.dumps(ytmeta, indent=1).encode())
 
     with open(metafile, 'wb') as fp:
