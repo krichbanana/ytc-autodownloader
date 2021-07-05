@@ -52,6 +52,8 @@ certify_finished() {
 }
 
 check_status() {
+    local outname="${1:?}";
+    local vid="${2:?}";
     test -s "${outname?}.stdout"
     if [[ $? == 0 ]]; then
         certify_finished "${vid?}"
@@ -76,7 +78,7 @@ run_chat_downloader_waiting() {
 
     run_chat_downloader "chat-logs/${outname?}" "${vid?}";
 
-    until test -s "${outname?}.stdout" || certify_finished "${vid?}"; do
+    until check_status "${outname}" "${vid}"; do
         # Likely broken by localization
         if grep -qF 'Private video' "chat-logs/${outname?}.stderr"; then
             echo "(downloader) Private video detected" >&2
