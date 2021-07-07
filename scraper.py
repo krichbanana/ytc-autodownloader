@@ -720,22 +720,22 @@ def process_one_status(video_id, first=False):
 def handle_special_signal(signum, frame):
     os.makedirs('dump', exist_ok=True)
 
-    with open("dump/lives_status", "wb") as fp:
-        fp.write(json.dumps(lives_status).encode())
+    with open("dump/lives_status", "w") as fp:
+        fp.write(json.dumps(lives_status))
 
-    with open("dump/saved_progress_status", "wb") as fp:
-        fp.write(json.dumps(saved_progress_status).encode())
+    with open("dump/saved_progress_status", "w") as fp:
+        fp.write(json.dumps(saved_progress_status))
 
-    with open("dump/fresh_progress_status", "wb") as fp:
-        fp.write(json.dumps(fresh_progress_status).encode())
+    with open("dump/fresh_progress_status", "w") as fp:
+        fp.write(json.dumps(fresh_progress_status))
 
-    with open("dump/cached_ytmeta", "wb") as fp:
-        fp.write(json.dumps(cached_ytmeta).encode())
+    with open("dump/cached_ytmeta", "w") as fp:
+        fp.write(json.dumps(cached_ytmeta))
 
-    with open("dump/pids", "wb") as fp:
-        fp.write(json.dumps(pids).encode())
+    with open("dump/pids", "w") as fp:
+        fp.write(json.dumps(pids))
 
-    with open("dump/staticconfig", "wb") as fp:
+    with open("dump/staticconfig", "w") as fp:
         print("FORCE_RESCRAPE=" + str(FORCE_RESCRAPE), file=fp)
         print("DISABLE_PERSISTENCE=" + str(DISABLE_PERSISTENCE), file=fp)
 
