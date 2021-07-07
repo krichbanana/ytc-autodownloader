@@ -126,7 +126,7 @@ def update_lives_status_holoschedule(dlog):
             # Extract link
             href = link.get('href')
 
-            if href.find('youtube') != -1:
+            if href.find('youtube/watch') != -1:
                 # Process Youtube link; get HH:MM starttime and user-friendly channel name (not localized)
                 items = [x for x in link.stripped_strings]
                 localtime = items[0]
