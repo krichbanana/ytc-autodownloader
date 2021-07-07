@@ -115,22 +115,52 @@ def update_lives_status_holoschedule(dlog):
     newlives = 0
     knownlives = 0
 
-    for child in allcontchildren:
-        day = child.find(class_='navbar-text')
+    error = False
 
-        if day:
-            localdate = [x for x in day.stripped_strings][0].split()[0]
+    try:
+        for child in allcontchildren:
+            day = child.find(class_='navbar-text')
 
-        # Extract MM/DD date from header
-        for link in child.find_all('a'):
-            # Extract link
+            if day:
+                localdate = [x for x in day.stripped_strings][0].split()[0]
+
+            # Extract MM/DD date from header
+            for link in child.find_all('a'):
+                # Extract link
+                href = link.get('href')
+
+                if href.find('youtube.com/watch') != -1:
+                    # Process Youtube link; get HH:MM starttime and user-friendly channel name (not localized)
+                    items = [x for x in link.stripped_strings]
+                    localtime = items[0]
+                    channelowner = items[1]
+                    video_id = href[(href.find('v=') + 2):]
+
+                    if video_id not in lives_status.keys():
+                        recall_meta(video_id, filter_progress=True)
+
+                    if video_id not in lives_status.keys():
+                        lives_status[video_id] = 'unknown'
+                        fresh_progress_status[video_id] = 'unscraped'
+                        print("discovery: new live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner, file=dlog, flush=True)
+                        newlives += 1
+                    else:
+                        # known (not new) live listed
+                        knownlives += 1
+    except Exception:
+        error = True
+        traceback.print_exc()
+
+    if newlives + knownlives == 0 or error:
+        print("warning: unexpected error when processing holoschedule page (found " + str(newlives + knownlives) + " total lives), using fallback", file=sys.stderr)
+        newlives = 0
+        knownlives = 0
+
+        for link in soup.find_all('a'):
+            # Extract any link
             href = link.get('href')
 
-            if href.find('youtube/watch') != -1:
-                # Process Youtube link; get HH:MM starttime and user-friendly channel name (not localized)
-                items = [x for x in link.stripped_strings]
-                localtime = items[0]
-                channelowner = items[1]
+            if href and href.find('youtube.com/watch') != -1:
                 video_id = href[(href.find('v=') + 2):]
 
                 if video_id not in lives_status.keys():
@@ -139,14 +169,18 @@ def update_lives_status_holoschedule(dlog):
                 if video_id not in lives_status.keys():
                     lives_status[video_id] = 'unknown'
                     fresh_progress_status[video_id] = 'unscraped'
-                    print("discovery: new live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner, file=dlog, flush=True)
+                    print("discovery: new live listed (fallback extraction): " + video_id, file=dlog, flush=True)
                     newlives += 1
                 else:
                     # known (not new) live listed
                     knownlives += 1
 
-    print("discovery: holoschedule: new lives: " + str(newlives))
-    print("discovery: holoschedule: known lives: " + str(knownlives))
+        print("discovery: holoschedule: (fallback) new lives: " + str(newlives))
+        print("discovery: holoschedule: (fallback) known lives: " + str(knownlives))
+
+    else:
+        print("discovery: holoschedule: new lives: " + str(newlives))
+        print("discovery: holoschedule: known lives: " + str(knownlives))
 
 
 def update_lives_status_urllist(dlog):
