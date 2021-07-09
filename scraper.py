@@ -23,6 +23,7 @@ saved_progress_status = {}
 fresh_progress_status = {}  # migrates to saved after statuses are reported
 cached_ytmeta = {}
 pids = {}
+general_stats = {}  # for debugging
 
 statuses = {'unknown', 'prelive', 'live', 'postlive', 'upload'}
 progress_statuses = {'unscraped', 'waiting', 'downloading', 'downloaded', 'missed', 'invalid', 'aborted'}
@@ -255,10 +256,7 @@ def process_channel_videos(channel, dlog):
                 if not FORCE_RESCRAPE and saved_progress in {'downloaded', 'missed', 'invalid', 'aborted'}:
                     numignores[saved_progress] = numignores.setdefault(saved_progress, 0) + 1
 
-                    try:
-                        del cached_ytmeta[video_id]
-                    except KeyError:
-                        pass
+                    delete_ytmeta_raw(video_id, suffix=" (channel)")
 
                     continue
 
@@ -394,10 +392,7 @@ def recall_meta(video_id, filter_progress=False):
             persist_meta(video_id, fresh=True)
 
             if should_ignore:
-                try:
-                    del cached_ytmeta[video_id]
-                except KeyError:
-                    pass
+                delete_ytmeta_raw(video_id, suffix=" (meta recall)")
 
 
 def process_ytmeta(video_id):
@@ -625,6 +620,21 @@ def _invoke_downloader_start(q, video_id, outfile):
     print("process fork " + str(pid) + " has waited")
 
 
+def delete_ytmeta_raw(video_id, suffix=None):
+    """ Delete ytmeta['raw'] field that eats memory; count deletions """
+    try:
+        del cached_ytmeta[video_id]['raw']
+        keyname = 'ytmeta del successes'
+        if suffix:
+            keyname = keyname + suffix
+        general_stats[keyname] = general_stats.setdefault(keyname, 0) + 1
+    except KeyError:
+        keyname = 'ytmeta del failures'
+        if suffix:
+            keyname = keyname + suffix
+        general_stats[keyname] = general_stats.setdefault(keyname, 0) + 1
+
+
 def process_one_status(video_id, first=False):
     # Process only on change
     if fresh_progress_status[video_id] == saved_progress_status.get(video_id):
@@ -643,10 +653,7 @@ def process_one_status(video_id, first=False):
         else:
             print("status: missed: " + video_id, file=statuslog)
 
-        try:
-            del cached_ytmeta[video_id]['raw']
-        except KeyError:
-            pass
+        delete_ytmeta_raw(video_id)
 
     elif fresh_progress_status[video_id] == 'invalid':
         if first:
@@ -654,10 +661,7 @@ def process_one_status(video_id, first=False):
         else:
             print("status: upload: " + video_id, file=statuslog)
 
-        try:
-            del cached_ytmeta[video_id]['raw']
-        except KeyError:
-            pass
+        delete_ytmeta_raw(video_id)
 
     elif fresh_progress_status[video_id] == 'aborted':
         if first:
@@ -665,10 +669,7 @@ def process_one_status(video_id, first=False):
         else:
             print("status: aborted: " + video_id, file=statuslog)
 
-        try:
-            del cached_ytmeta[video_id]['raw']
-        except KeyError:
-            pass
+        delete_ytmeta_raw(video_id)
 
     elif fresh_progress_status[video_id] == 'downloading':
         if first:
@@ -684,10 +685,7 @@ def process_one_status(video_id, first=False):
                 del pids[video_id]
                 persist_meta(video_id, fresh=True)
 
-                try:
-                    del cached_ytmeta[video_id]['raw']
-                except KeyError:
-                    pass
+                delete_ytmeta_raw(video_id)
 
             else:
                 if first:
@@ -708,10 +706,7 @@ def process_one_status(video_id, first=False):
         else:
             print("status: finished: " + video_id, file=statuslog)
 
-            try:
-                del cached_ytmeta[video_id]['raw']
-            except KeyError:
-                pass
+            delete_ytmeta_raw(video_id)
 
     saved_progress_status[video_id] = fresh_progress_status[video_id]
     statuslog.flush()
@@ -734,6 +729,9 @@ def handle_special_signal(signum, frame):
 
     with open("dump/pids", "w") as fp:
         fp.write(json.dumps(pids))
+
+    with open("dump/general_stats", "w") as fp:
+        fp.write(json.dumps(general_stats))
 
     with open("dump/staticconfig", "w") as fp:
         print("FORCE_RESCRAPE=" + str(FORCE_RESCRAPE), file=fp)
