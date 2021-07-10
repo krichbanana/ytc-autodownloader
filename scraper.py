@@ -213,10 +213,10 @@ def update_lives_status_holoschedule(dlog):
                 continue
 
             if not malformed:
-                if video_id not in lives_status.keys():
+                if video_id not in lives_status:
                     recall_meta(video_id, filter_progress=True)
 
-                if video_id not in lives_status.keys():
+                if video_id not in lives_status:
                     lives_status[video_id] = 'unknown'
                     fresh_progress_status[video_id] = 'unscraped'
                     print("discovery: new live listed (fallback extraction): " + video_id, file=dlog, flush=True)
@@ -274,7 +274,7 @@ def invoke_channel_scraper(channel):
 
         for ytmeta in metalist:
             video_id = ytmeta["id"]
-            if video_id not in cached_ytmeta.keys():
+            if video_id not in cached_ytmeta:
                 cached_ytmeta[video_id] = ytmeta
             else:
                 print("ignoring ytmeta from channel scrape")
@@ -291,10 +291,10 @@ def process_channel_videos(channel, dlog):
         with open("channel-cached/" + channel + ".url.all") as urls:
             for video_id in [f.split(" ")[1].strip() for f in urls.readlines()]:
                 # Process each recent video
-                if video_id not in lives_status.keys():
+                if video_id not in lives_status:
                     recall_meta(video_id, filter_progress=True)
 
-                if video_id not in lives_status.keys():
+                if video_id not in lives_status:
                     lives_status[video_id] = 'unknown'
                     fresh_progress_status[video_id] = 'unscraped'
                     print("discovery: new live listed: " + video_id + " on channel " + channel, file=dlog, flush=True)
@@ -343,7 +343,7 @@ def process_channel_videos(channel, dlog):
 
 
 def persist_meta(video_id, fresh=False):
-    if video_id not in lives_status.keys():
+    if video_id not in lives_status:
         raise ValueError('invalid video_id')
 
     metafile = 'by-video-id/' + video_id
@@ -434,7 +434,7 @@ def recall_meta(video_id, filter_progress=False):
             cached_ytmeta[video_id] = ytmeta['ytmeta']
 
         # unmigrated (monolithic file) format
-        elif 'ytmeta' in meta.keys():
+        elif 'ytmeta' in meta:
             cached_ytmeta[video_id] = meta['ytmeta']
 
             if DISABLE_PERSISTENCE:
@@ -450,7 +450,7 @@ def recall_meta(video_id, filter_progress=False):
 def process_ytmeta(video_id):
     if not lives_status.get(video_id):
         raise ValueError('invalid video_id')
-    if video_id not in cached_ytmeta.keys():
+    if video_id not in cached_ytmeta:
         raise RuntimeError('precondition failed: called process_ytmeta but ytmeta for video_id ' + video_id + ' not found.')
 
     if cached_ytmeta[video_id]['is_upcoming']:
@@ -694,7 +694,7 @@ def process_one_status(video_id, first=False):
 
     if fresh_progress_status[video_id] == 'waiting':
         print("status: just invoked: " + video_id, file=statuslog)
-        if video_id not in cached_ytmeta.keys():
+        if video_id not in cached_ytmeta:
             print("warning: cached_ytmeta missing for video " + video_id, file=sys.stderr)
 
         invoke_downloader(video_id)
@@ -812,7 +812,7 @@ if __name__ == '__main__':
     if True:
         try:
             # Populate cache from disk
-            for video_id in lives_status.keys():
+            for video_id in lives_status:
                 progress = fresh_progress_status.get(video_id)
 
                 if progress is None or progress == 'unscraped':
@@ -823,10 +823,10 @@ if __name__ == '__main__':
             process_dlpid_queue()
 
             # Scrape each video again if needed
-            for video_id in lives_status.keys():
+            for video_id in lives_status:
                 maybe_rescrape_initially(video_id)
 
-            for video_id in lives_status.keys():
+            for video_id in lives_status:
                 process_one_status(video_id, first=True)
 
         except KeyboardInterrupt:
@@ -849,10 +849,10 @@ if __name__ == '__main__':
             process_dlpid_queue()
 
             # Scrape each video again if needed
-            for video_id in lives_status.keys():
+            for video_id in lives_status:
                 maybe_rescrape(video_id)
 
-            for video_id in lives_status.keys():
+            for video_id in lives_status:
                 process_one_status(video_id)
 
         except KeyError:
