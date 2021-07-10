@@ -106,6 +106,27 @@ def update_lives_status():
             traceback.print_exc()
 
 
+def extract_video_id_from_yturl(href):
+    """ Extract a Youtube video id from a given URL
+        Returns None on error or failure.
+    """
+    video_id = None
+
+    try:
+        if href.find('youtube.com/watch') != -1:
+            video_id = href[(href.find('v=') + 2):]
+        elif href.find('youtu.be/') != -1:
+            video_id = href[(href.find('be/') + 3):]
+
+        if len(video_id) < 2:
+            return None
+
+        return video_id
+
+    except Exception:
+        return None
+
+
 def update_lives_status_holoschedule(dlog):
     # Find all sections indicated by a 'day' header
     soup = update_lives()
@@ -127,27 +148,48 @@ def update_lives_status_holoschedule(dlog):
 
             # Extract MM/DD date from header
             for link in child.find_all('a'):
+                # Process Youtube link; get HH:MM starttime and user-friendly channel name (not localized) if possible
+                items = None
+                localtime = ''
+                channelowner = ''
+                video_id = None
+                malformed = False
+
                 # Extract link
                 href = link.get('href')
 
-                if href.find('youtube.com/watch') != -1:
-                    # Process Youtube link; get HH:MM starttime and user-friendly channel name (not localized)
-                    items = [x for x in link.stripped_strings]
-                    localtime = items[0]
-                    channelowner = items[1]
-                    video_id = href[(href.find('v=') + 2):]
+                video_id = extract_video_id_from_yturl(href)
 
-                    if video_id not in lives_status.keys():
-                        recall_meta(video_id, filter_progress=True)
+                if video_id is None:
+                    error = True
 
-                    if video_id not in lives_status.keys():
-                        lives_status[video_id] = 'unknown'
-                        fresh_progress_status[video_id] = 'unscraped'
+                    continue
+
+                # Check for existing state
+                if video_id not in lives_status:
+                    recall_meta(video_id, filter_progress=True)
+
+                if video_id not in lives_status:
+                    lives_status[video_id] = 'unknown'
+                    fresh_progress_status[video_id] = 'unscraped'
+
+                    try:
+                        items = [x for x in link.stripped_strings]
+                        localtime = items[0]
+                        channelowner = items[1]
+                    except Exception:
+                        malformed = True
+
+                    if not malformed:
                         print("discovery: new live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner, file=dlog, flush=True)
-                        newlives += 1
                     else:
-                        # known (not new) live listed
-                        knownlives += 1
+                        print("discovery: new live listed (malformed page): " + video_id, file=dlog, flush=True)
+
+                    newlives += 1
+                else:
+                    # known (not new) live listed
+                    knownlives += 1
+
     except Exception:
         error = True
         traceback.print_exc()
@@ -156,14 +198,21 @@ def update_lives_status_holoschedule(dlog):
         print("warning: unexpected error when processing holoschedule page (found " + str(newlives + knownlives) + " total lives), using fallback", file=sys.stderr)
         newlives = 0
         knownlives = 0
+        error = False
 
         for link in soup.find_all('a'):
             # Extract any link
             href = link.get('href')
+            video_id = None
 
-            if href and href.find('youtube.com/watch') != -1:
-                video_id = href[(href.find('v=') + 2):]
+            video_id = extract_video_id_from_yturl(href)
 
+            if video_id is None:
+                error = True
+
+                continue
+
+            if not malformed:
                 if video_id not in lives_status.keys():
                     recall_meta(video_id, filter_progress=True)
 
@@ -178,6 +227,9 @@ def update_lives_status_holoschedule(dlog):
 
         print("discovery: holoschedule: (fallback) new lives: " + str(newlives))
         print("discovery: holoschedule: (fallback) known lives: " + str(knownlives))
+
+        if error:
+            print("warning: unexpected error when processing holoschedule page using fallback method (found " + str(newlives + knownlives) + " total lives)", file=sys.stderr)
 
     else:
         print("discovery: holoschedule: new lives: " + str(newlives))
