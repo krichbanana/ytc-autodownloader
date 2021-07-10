@@ -34,8 +34,8 @@ compress() {
 }
 
 run_chat_downloader() {
-    local outname="${1?}";
-    local vid="${2?}";
+    local outname="${1?}"
+    local vid="${2?}"
     local pid=$$
     { chat_downloader -o "${outname?}".json --message_groups "all" --indent 2 -- "${vid?}" >> "${outname?}".stdout; echo $? > exval."$pid"; } 2>&1 | tee "${outname?}.stderr"
     local exval="$(<"exval.$pid")"
@@ -50,7 +50,7 @@ readonly EXIT_FALSE=1
 readonly EXIT_BADARG=2
 
 certify_finished() {
-    local vid="${1?}";
+    local vid="${1?}"
     local code="$(./yt-dlp/yt-dlp.sh -q -s --ignore-no-formats-error --print '%(is_live|0)d%(is_upcoming|0)d' -- "${vid?}")"
     if [[ "$code" == "00" ]]; then
         return $EXIT_TRUE
@@ -61,8 +61,8 @@ certify_finished() {
 }
 
 check_status() {
-    local outname="${1:?}";
-    local vid="${2:?}";
+    local outname="${1:?}"
+    local vid="${2:?}"
 
     if ((got_sigint)); then
         echo '(downloader) not retrying due to SIGINT'
@@ -88,11 +88,11 @@ write_status() {
 }
 
 run_chat_downloader_waiting() {
-    local outname="${1:?}";
-    local vid="${2:?}";
+    local outname="${1:?}"
+    local vid="${2:?}"
     local failures=0
 
-    run_chat_downloader "chat-logs/${outname?}" "${vid?}";
+    run_chat_downloader "chat-logs/${outname?}" "${vid?}"
 
     until check_status "${outname}" "${vid}"; do
         # Likely broken by localization
@@ -135,18 +135,18 @@ run_chat_downloader_waiting() {
         if grep -qF 'Finished retrieving chat replay' "chat-logs/${outname?}.stderr"; then
             echo "(downloader) warning: Chat replay detected, breaking out of here; fix this." >&2
             write_status "missed/bug" "${vid?}"
-            break;
+            break
         fi
 
         echo '(downloader)' "Retrying chat downloader for video ${vid?}"
-        run_chat_downloader "chat-logs/${outname?}" "${vid?}";
+        run_chat_downloader "chat-logs/${outname?}" "${vid?}"
 
         if ((got_sigint)); then
             echo '(downloader) not retrying due to SIGINT'
-            break;
+            break
         fi
 
-        sleep 60;
+        sleep 60
     done
 
     if grep -qF 'does not have a chat replay' "chat-logs/${outname?}.stderr"; then
