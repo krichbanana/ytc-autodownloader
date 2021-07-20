@@ -196,6 +196,7 @@ def update_lives_status_holoschedule(dlog):
 
     if newlives + knownlives == 0 or error:
         print("warning: unexpected error when processing holoschedule page (found " + str(newlives + knownlives) + " total lives), using fallback", file=sys.stderr)
+        saved_newlives = newlives
         newlives = 0
         knownlives = 0
         error = False
@@ -226,10 +227,11 @@ def update_lives_status_holoschedule(dlog):
                     knownlives += 1
 
         print("discovery: holoschedule: (fallback) new lives: " + str(newlives))
+        print("discovery: holoschedule: (fallback) new lives (initial try): " + str(saved_newlives))
         print("discovery: holoschedule: (fallback) known lives: " + str(knownlives))
 
         if error:
-            print("warning: unexpected error when processing holoschedule page using fallback method (found " + str(newlives + knownlives) + " total lives)", file=sys.stderr)
+            print("note: video id extraction errors occured when processing holoschedule page using fallback method (found " + str(newlives + knownlives) + " total lives)", file=sys.stderr)
 
     else:
         print("discovery: holoschedule: new lives: " + str(newlives))
