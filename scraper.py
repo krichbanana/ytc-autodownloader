@@ -528,7 +528,6 @@ def export_rescrape_fields(jsonres):
     ytmeta['description'] = jsonres['description']
     ytmeta['uploader'] = jsonres['uploader']
     ytmeta['channel_id'] = jsonres['channel_id']
-    ytmeta['is_livestream'] = jsonres['was_live']
     ytmeta['duration'] = jsonres['duration']
 
     try:
@@ -537,12 +536,19 @@ def export_rescrape_fields(jsonres):
         ytmeta['live_starttime'] = jsonres['live_starttime']
         ytmeta['live_endtime'] = jsonres['live_endtime']
         ytmeta['is_upcoming'] = jsonres['is_upcoming']
+        ytmeta['is_livestream'] = jsonres['was_live']
 
     except KeyError:
         # yt-dlp introduced their own new metadata fields for livestreams, try those.
         # Note that some data, like the endtime, can't be directly obtained. Also,
         # ISO-8601 times for starttime/endtime have been converted to epoch timestamps.
         try:
+            # Old field but repurposed to strictly match its name.
+            ytmeta['is_livestream'] = jsonres['was_live']
+
+            # Refetch using possibly missing new fields
+            ytmeta['is_livestream'] = 'not_live' not in jsonres['live_status']
+
             # Reliable, except in the case of "late" livestreams (where it seems to be missing).
             ytmeta['live_starttime'] = jsonres['release_timestamp']
 
@@ -551,10 +557,6 @@ def export_rescrape_fields(jsonres):
             # except for saving finished stream metadata, which isn't done automatically.
             if ytmeta['live_starttime'] is not None and bool(ytmeta['duration']):
                 ytmeta['live_endtime'] = ytmeta['live_starttime'] + ytmeta['duration']
-
-                # Premieres will have a duration, even if upcoming.
-                if ytmeta['is_livestream']:
-                    ytmeta['is_upcoming'] = False
 
             else:
                 ytmeta['live_endtime'] = None
@@ -575,6 +577,7 @@ def export_rescrape_fields(jsonres):
 
         except KeyError:
             print("warning: exporting ytmeta fields not fully successful, expect this download to fail", file=sys.stderr)
+            ytmeta['is_livestream'] = ytmeta.get('is_livestream')
             ytmeta['live_starttime'] = ytmeta.get('live_starttime')
             ytmeta['live_endtime'] = ytmeta.get('live_endtime')
             ytmeta['live_status'] = ytmeta.get('live_status')
@@ -628,7 +631,7 @@ def invoke_scraper(video_id):
 def safen_path(s):
     try:
         # The slice is to avoid long fields hitting path limits, albeit ineffectively.
-        return s.replace(':', '_').replace('/', '_').replace(' ', '_')[0:100]
+        return str(s).replace(':', '_').replace('/', '_').replace(' ', '_')[0:100]
 
     except Exception:
         print("warning: string safening failed, returning dummy value...")
