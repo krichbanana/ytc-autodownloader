@@ -525,14 +525,61 @@ def export_rescrape_fields(jsonres):
     ytmeta['id'] = jsonres['id']
     ytmeta['title'] = jsonres['title']
     ytmeta['description'] = jsonres['description']
-    ytmeta['duration'] = jsonres['duration']
     ytmeta['uploader'] = jsonres['uploader']
     ytmeta['channel_id'] = jsonres['channel_id']
     ytmeta['is_livestream'] = jsonres['was_live']
-    ytmeta['is_live'] = jsonres['is_live']
-    ytmeta['live_starttime'] = jsonres['live_starttime']
-    ytmeta['live_endtime'] = jsonres['live_endtime']
-    ytmeta['is_upcoming'] = jsonres['is_upcoming']
+    ytmeta['duration'] = jsonres['duration']
+
+    try:
+        # Fields from my yt-dlp fork's experimental patches
+        ytmeta['is_live'] = jsonres['is_live']
+        ytmeta['live_starttime'] = jsonres['live_starttime']
+        ytmeta['live_endtime'] = jsonres['live_endtime']
+        ytmeta['is_upcoming'] = jsonres['is_upcoming']
+
+    except KeyError:
+        # yt-dlp introduced their own new metadata fields for livestreams, try those.
+        # Note that some data, like the endtime, can't be directly obtained. Also,
+        # ISO-8601 times for starttime/endtime have been converted to epoch timestamps.
+        try:
+            # Reliable, except in the case of "late" livestreams (where it seems to be missing).
+            ytmeta['live_starttime'] = jsonres['release_timestamp']
+
+            # The duration provided by Youtube might not be the broadcast duration;
+            # further testing is required. We don't rely on the duration though
+            # except for saving finished stream metadata, which isn't done automatically.
+            if ytmeta['live_starttime'] is not None and bool(ytmeta['duration']):
+                ytmeta['live_endtime'] = ytmeta['live_starttime'] + ytmeta['duration']
+
+                # Premieres will have a duration, even if upcoming.
+                if ytmeta['is_livestream']:
+                    ytmeta['is_upcoming'] = False
+
+            else:
+                ytmeta['live_endtime'] = None
+
+            # Fields is_upcoming and is_live have been merged into a string field.
+            ytmeta['live_status'] = jsonres['live_status']
+
+            if ytmeta['live_status'] == 'is_live':
+                ytmeta['is_live'] = True
+            elif ytmeta['live_status'] in {'is_upcoming', 'was_live', 'not_live'}:
+                ytmeta['is_live'] = False
+            else:
+                # live_status is None or set to an unknown value
+                ytmeta['is_live'] = ytmeta['live_status'] != 'is_upcoming' and jsonres['live_endtime'] is None
+
+            if 'is_upcoming' not in ytmeta:
+                ytmeta['is_upcoming'] = ytmeta['live_status'] == 'is_upcoming'
+
+        except KeyError:
+            print("warning: exporting ytmeta fields not fully successful, expect this download to fail", file=sys.stderr)
+            ytmeta['live_starttime'] = ytmeta.get('live_starttime')
+            ytmeta['live_endtime'] = ytmeta.get('live_endtime')
+            ytmeta['live_status'] = ytmeta.get('live_status')
+            ytmeta['is_live'] = ytmeta.get('is_live')
+            # last-ditch effort to avoid missing a stream
+            ytmeta['is_upcoming'] = ytmeta.get('is_upcoming') or not bool(ytmeta['duration'])
 
     return ytmeta
 
