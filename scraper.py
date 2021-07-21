@@ -16,6 +16,7 @@ DISABLE_PERSISTENCE = False
 FORCE_RESCRAPE = False
 
 downloadmetacmd = "./yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
+downloadchatprgm = "./downloader.py"
 channelscrapecmd = "./scrape_channel.sh"
 
 lives_status = {}
@@ -711,7 +712,7 @@ def _invoke_downloader_start(q, video_id, outfile):
     # There is not much use for the python pid, we store the process ID only for debugging
     pid = os.getpid()
     print("process fork " + str(pid) + " is live, with outfile " + outfile)
-    proc = subprocess.Popen(['./downloader-invoker.sh', outfile, video_id])
+    proc = subprocess.Popen([downloadchatprgm, outfile, video_id])
 
     q.put((pid, proc.pid, video_id))
     # Close the queue to flush it and avoid blocking the python process on exit.
