@@ -164,8 +164,9 @@ def run_loop(outname, video_id):
     else:
         print('(downloader) download complete:', video_id)
 
-    # TODO: compression
-    compress(outname)
+    # Compress logs after the downloader exits.
+    for ext in ['.json', '.stdout']:
+        compress(outname + ext)
 
 
 def handle_special_signal(signum, frame):
