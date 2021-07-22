@@ -550,6 +550,10 @@ def export_rescrape_fields(jsonres):
             # Refetch using possibly missing new fields
             ytmeta['is_livestream'] = 'not_live' not in jsonres['live_status']
 
+            if 'track' in jsonres:
+                # Should be a song, so likely (certainly?) a premiere
+                ytmeta['is_livestream'] = False
+
             # Reliable, except in the case of "late" livestreams (where it seems to be missing).
             ytmeta['live_starttime'] = jsonres['release_timestamp']
 
