@@ -74,7 +74,7 @@ progress_statuses = {'unscraped', 'waiting', 'downloading', 'downloaded', 'misse
 
 
 def update_lives():
-    os.system('wget -nv --load-cookies=cookies-schedule-hololive-tv.txt https://schedule.hololive.tv/lives -O auto-lives_tz')
+    subprocess.run('wget -nv --load-cookies=cookies-schedule-hololive-tv.txt https://schedule.hololive.tv/lives -O auto-lives_tz', shell=True)
 
     html_doc = ''
     with open("auto-lives_tz", "rb") as fp:
@@ -263,7 +263,7 @@ def invoke_channel_scraper(channel):
     """ Scrape the channel for latest videos and batch-fetch meta state. """
     # Note: some arbitrary limits are set in the helper program that may need tweaking.
     print("Scraping channel " + channel)
-    os.system(channelscrapecmd + " " + channel)
+    subprocess.run(channelscrapecmd + " " + channel, shell=True)
 
     print("Processing channel metadata")
     with open("channel-cached/" + channel + ".meta.new") as allmeta:
@@ -728,7 +728,7 @@ def check_pid(pid):
 
 def start_watchdog():
     """ Ensure the program exits after a top-level exception. """
-    os.system('date')
+    subprocess.run('date')
     subprocess.Popen(["./watchdog.sh", str(os.getpid())])
 
 
