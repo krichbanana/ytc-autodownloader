@@ -14,6 +14,7 @@ import signal
 # Debug switch
 DISABLE_PERSISTENCE = False
 FORCE_RESCRAPE = False
+VERBOSE_LOGNAMES = False
 
 downloadmetacmd = "./yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
 downloadchatprgm = "./downloader.py"
@@ -644,20 +645,25 @@ def get_outfile_basename(video_id):
         raise ValueError('invalid video_id')
 
     currtimesafe = "curr-" + safen_path(dt.datetime.utcnow().isoformat(timespec='seconds')) + "_UTC"
+    basename = "_" + video_id + "_curr-" + str(dt.datetime.utcnow().timestamp())
 
-    try:
-        # We could embed the title here, but tracking path limits is a pain, and the title might be mangled
-        uploadersafe = safen_path(cached_ytmeta[video_id]['uploader'])
-        starttimesafe = "start-" + safen_path(cached_ytmeta[video_id]['live_starttime'])
-        livestatus = lives_status[video_id]
-        basename = "_" + video_id + "_" + uploadersafe + "_" + livestatus + "_" + starttimesafe + "_" + currtimesafe
+    if VERBOSE_LOGNAMES:
+        try:
+            # We could embed the title here, but tracking path limits is a pain, and the title might be mangled
+            uploadersafe = safen_path(cached_ytmeta[video_id]['uploader'])
+            starttimesafe = "start-" + safen_path(cached_ytmeta[video_id]['live_starttime'])
+            livestatus = lives_status[video_id]
+            basename = "_" + video_id + "_" + uploadersafe + "_" + livestatus + "_" + starttimesafe + "_" + currtimesafe
 
-        return basename
+            return basename
 
-    except Exception:
-        print("warning: basename generation failed, using simpler name", file=sys.stderr)
-        basename = "_" + video_id + "_" + currtimesafe
+        except Exception:
+            print("warning: basename generation failed, using simpler name", file=sys.stderr)
 
+            return basename
+
+    else:
+        # Just aim for uniqueness, not clarity.
         return basename
 
 
@@ -683,6 +689,17 @@ def invoke_downloader(video_id):
             print("warning: duplicate invocation for video " + video_id + " (according to internal PID state)", file=sys.stderr)
 
         outfile = get_outfile_basename(video_id)
+        title = cached_ytmeta[video_id].get('title')
+        uploader = cached_ytmeta[video_id].get('uploader')
+        channel_id = cached_ytmeta[video_id].get('live_starttime')
+        starttime = cached_ytmeta[video_id].get('live_starttime')
+        live_status = lives_status[video_id]
+        currtimesafe = safen_path(dt.datetime.utcnow().isoformat(timespec='seconds')) + "_UTC"
+
+        with open("by-video-id/" + video_id + ".loginfo", "a") as fp:
+            res = {"video_id": video_id, "title": title, "channel_id": channel_id, "uploader": uploader, "starttime": starttime, "currtime": currtimesafe, "live_status": live_status, "basename": outfile}
+            fp.write(json.dumps(res, indent=2))
+
         p = mp.Process(target=_invoke_downloader_start, args=(q, video_id, outfile))
         p.start()
 
