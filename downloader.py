@@ -56,6 +56,8 @@ def compress(filename):
         if ret != 0:
             print(f"(downloader) lzip compression failed: {ret = }", file=sys.stderr)
         else:
+            print('(downloader) compression complete:', filename)
+
             return
 
     try:
@@ -66,6 +68,8 @@ def compress(filename):
         if ret != 0:
             print(f"(downloader) zstd compression failed: {ret = }", file=sys.stderr)
         else:
+            print('(downloader) compression complete:', filename)
+
             return
 
     print(f"(downloader) compression failed: {filename = }", file=sys.stderr)
