@@ -935,7 +935,9 @@ def handle_special_signal(signum, frame):
     os.makedirs('dump', exist_ok=True)
 
     with open("dump/lives", "w") as fp:
-        fp.write(json.dumps(lives))
+        for video in lives.values():
+            # Fine as long as no objects in the class.
+            fp.write(json.dumps(video.__dict__, sort_keys=True))
 
     with open("dump/pids", "w") as fp:
         fp.write(json.dumps(pids))
