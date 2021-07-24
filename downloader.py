@@ -92,9 +92,12 @@ def run_loop(outname, video_id):
 
                 if errors == 1:
                     print('(downloader) Waiting 60 seconds before retrying:', video_id)
+
                 elif errors > max_retries:
                     print('(downloader) Retry limit reached:', video_id)
                     aborted = True
+
+                    break
 
                 time.sleep(60)
 
