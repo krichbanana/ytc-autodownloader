@@ -3,6 +3,8 @@ import sys
 import time
 import subprocess
 import signal
+import datetime as dt
+import json
 
 from chat_downloader import ChatDownloader
 from chat_downloader.errors import (
@@ -75,15 +77,34 @@ def compress(filename):
     print(f"(downloader) compression failed: {filename = }", file=sys.stderr)
 
 
+def write_status(final_status: str, video_id: str, init_timestamp):
+    with open(f"by-video-id/{video_id}.status", "a") as fp:
+        final_timestamp = dt.datetime.utcnow().timestamp()
+        res = {'init_timestamp': init_timestamp, 'final_timestamp': final_timestamp, 'final_status': final_status}
+        fp.write(json.dumps(res))
+
+
+def try_for_cookies():
+    # TODO
+    pass
+
+
 def run_loop(outname, video_id):
     """ Download chat, retrying on errors """
+    # control flow
     errors = 0
     retry = False
     paranoid_retry = False
+    cookies = None
+    new_cookies = False
+    # reporting only
     aborted = False
+    started = False
+    retried = False
 
     output_file = f"{outname}.json"
     max_retries = 720   # 12 hours, with 60 second delays
+    init_timestamp = dt.datetime.utcnow().timestamp()
 
     try:
         while True:
@@ -99,7 +120,11 @@ def run_loop(outname, video_id):
 
                     break
 
-                time.sleep(60)
+                # Retry members only video on new cookies immediately.
+                if not new_cookies:
+                    time.sleep(60)
+                else:
+                    new_cookies = False
 
             retry = True
 
@@ -107,9 +132,12 @@ def run_loop(outname, video_id):
                 chat = downloader.get_chat(video_id, output=output_file, message_groups=['all'], indent=2, overwrite=False)
 
                 if chat.is_live:
+                    started = True
+
                     print('(downloader) Downloading chat from live video:', video_id)
                     if paranoid_retry:
                         print("(downloader) warning: chat downloader exited too soon!", file=sys.stderr)
+                        retried = True
                         paranoid_retry = False
 
                     with open(f"{outname}.stdout", "a") as fp:
@@ -123,6 +151,7 @@ def run_loop(outname, video_id):
                 else:
                     if not paranoid_retry:
                         print('(downloader) Video is not live, ignoring:', video_id)
+                        write_status('missed', video_id, init_timestamp)
 
                     paranoid_retry = False
 
@@ -136,7 +165,27 @@ def run_loop(outname, video_id):
                     break
 
             except VideoUnplayable:
-                print('(downloader) Members only video detected, try again with cookies:', video_id)
+                # We don't have a hint from chat_downloader about if a member video is live
+                # YouTube should provide is_live, even on subscriber_only (member) videos,
+                # however I do not think chat_downloader provides this information.
+                next_cookies = try_for_cookies()
+                new_cookies = False
+                if next_cookies is not None:
+                    if cookies is None:
+                        print('(downloader) found new cookies:', video_id)
+                    else:
+                        if cookies != next_cookies:
+                            print('(downloader) found new cookies, different from current cookies:', video_id)
+                            cookies = next_cookies
+                            new_cookies = True
+
+                if not new_cookies:
+                    if cookies is not None:
+                        print('(downloader) Members only video detected, try again with different cookies:', video_id)
+                    else:
+                        print('(downloader) Members only video detected, try again with cookies:', video_id)
+                else:
+                    print('(downloader) Members only video detected, will try again with new cookies:', video_id)
 
             except VideoUnavailable:
                 print('(downloader) Removed video detected, giving up:', video_id)
@@ -145,7 +194,7 @@ def run_loop(outname, video_id):
 
                 break
 
-            except (ChatDisabled, NoChatReplay):
+            except ChatDisabled:
                 if not paranoid_retry:
                     print('(downloader) Disabled chat detected:', video_id)
                     # 1 week, 60 second intervals (might be longer if videos are rescheduled)
@@ -153,6 +202,13 @@ def run_loop(outname, video_id):
 
                 else:
                     break
+
+            except NoChatReplay:
+                if not paranoid_retry:
+                    print('(downloader) Video is not live, ignoring (no replay):', video_id)
+                    write_status('missed', video_id, init_timestamp)
+
+                break
 
             except ChatDownloaderError as e:
                 print(f'(downloader) {e}:', video_id)
@@ -168,8 +224,22 @@ def run_loop(outname, video_id):
 
     if aborted or errors > max_retries:
         print('(downloader) warning: download incomplete:', video_id, file=sys.stderr)
+
+        if started:
+            if retried:
+                write_status('started+retried+aborted', video_id, init_timestamp)
+            else:
+                write_status('started+aborted', video_id, init_timestamp)
+        else:
+            write_status('aborted', video_id, init_timestamp)
+
     else:
         print('(downloader) download complete:', video_id)
+
+        if retried:
+            write_status('finished+retried', video_id, init_timestamp)
+        else:
+            write_status('finished', video_id, init_timestamp)
 
     # Compress logs after the downloader exits.
     for ext in ['.json', '.stdout']:
