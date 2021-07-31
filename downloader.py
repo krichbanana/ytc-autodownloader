@@ -275,8 +275,9 @@ def run_loop(outname, video_id):
             write_status('finished', video_id, init_timestamp)
 
     # Compress logs after the downloader exits.
-    for ext in ['.json', '.stdout']:
-        compress(outname + ext)
+    if started:
+        for ext in ['.json', '.stdout']:
+            compress(outname + ext)
 
 
 def handle_special_signal(signum, frame):
