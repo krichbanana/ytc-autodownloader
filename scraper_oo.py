@@ -696,8 +696,8 @@ def export_rescrape_fields(jsonres):
             if 'is_upcoming' not in ytmeta:
                 ytmeta['is_upcoming'] = ytmeta['live_status'] == 'is_upcoming'
 
-        except KeyError:
-            print("warning: exporting ytmeta fields not fully successful, expect this download to fail", file=sys.stderr)
+        except (TypeError, KeyError):
+            print("warning: exporting ytmeta fields not fully successful, expect this download to fail:", ytmeta.get('id'), file=sys.stderr)
             ytmeta['is_livestream'] = ytmeta.get('is_livestream')
             ytmeta['live_starttime'] = ytmeta.get('live_starttime')
             ytmeta['live_endtime'] = ytmeta.get('live_endtime')
