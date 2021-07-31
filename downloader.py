@@ -7,6 +7,7 @@ import datetime as dt
 import json
 
 from chat_downloader import ChatDownloader
+from chat_downloader.sites import YouTubeChatDownloader
 from chat_downloader.errors import (
     LoginRequired,
     VideoUnplayable,
@@ -29,6 +30,9 @@ ids = [
 ]
 
 downloader = ChatDownloader()  # modify this if cookies are necessary
+
+# Forcefully create a YouTube session
+youtube = downloader.create_session(YouTubeChatDownloader)
 
 EXIT_TRUE = 0
 EXIT_FALSE = 1
@@ -107,6 +111,14 @@ def run_loop(outname, video_id):
     init_timestamp = dt.datetime.utcnow().timestamp()
 
     try:
+        details = youtube.get_video_data(video_id)
+        is_live = details.get('status') in {'live', 'upcoming'}
+    except AttributeError:
+        print('(downloader) warning: chat_downloader out of date.', file=sys.stderr)
+        details = None
+        is_live = None
+
+    try:
         while True:
             if retry:
                 errors += 1
@@ -131,7 +143,13 @@ def run_loop(outname, video_id):
             try:
                 chat = downloader.get_chat(video_id, output=output_file, message_groups=['all'], indent=2, overwrite=False)
 
-                if chat.is_live:
+                # chat_downloader feature check
+                try:
+                    is_live = chat.is_live
+                except AttributeError:
+                    pass
+
+                if is_live:
                     started = True
 
                     print('(downloader) Downloading chat from live video:', video_id)
@@ -165,9 +183,13 @@ def run_loop(outname, video_id):
                     break
 
             except VideoUnplayable:
-                # We don't have a hint from chat_downloader about if a member video is live
-                # YouTube should provide is_live, even on subscriber_only (member) videos,
-                # however I do not think chat_downloader provides this information.
+                # YouTube should provide is_live, even on subscriber_only (member) videos
+                if details and details.get('status') is not None:   # feature check
+                    if not is_live:
+                        # members-only stream, missed.
+                        write_status('missed', video_id, init_timestamp)
+                        break
+
                 next_cookies = try_for_cookies()
                 new_cookies = False
                 if next_cookies is not None:
