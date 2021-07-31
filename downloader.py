@@ -105,6 +105,7 @@ def run_loop(outname, video_id):
     aborted = False
     started = False
     retried = False
+    missed = False
 
     output_file = f"{outname}.json"
     max_retries = 720   # 12 hours, with 60 second delays
@@ -169,7 +170,7 @@ def run_loop(outname, video_id):
                 else:
                     if not paranoid_retry:
                         print('(downloader) Video is not live, ignoring:', video_id)
-                        write_status('missed', video_id, init_timestamp)
+                        missed = True
 
                     paranoid_retry = False
 
@@ -187,7 +188,9 @@ def run_loop(outname, video_id):
                 if details and details.get('status') is not None:   # feature check
                     if not is_live:
                         # members-only stream, missed.
-                        write_status('missed', video_id, init_timestamp)
+                        print('(downloader) Member video is not live, ignoring:', video_id)
+                        missed = True
+
                         break
 
                 next_cookies = try_for_cookies()
@@ -228,7 +231,7 @@ def run_loop(outname, video_id):
             except NoChatReplay:
                 if not paranoid_retry:
                     print('(downloader) Video is not live, ignoring (no replay):', video_id)
-                    write_status('missed', video_id, init_timestamp)
+                    missed = True
 
                 break
 
@@ -254,6 +257,14 @@ def run_loop(outname, video_id):
                 write_status('started+aborted', video_id, init_timestamp)
         else:
             write_status('aborted', video_id, init_timestamp)
+
+    elif not started and missed:
+        print('(downloader) download missed:', video_id)
+
+        if retried:
+            write_status('missed+retried', video_id, init_timestamp)
+        else:
+            write_status('missed', video_id, init_timestamp)
 
     else:
         print('(downloader) download complete:', video_id)
