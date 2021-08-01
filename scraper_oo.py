@@ -17,18 +17,23 @@ FORCE_RESCRAPE = False
 
 downloadmetacmd = "../yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
 downloadchatprgm = "../downloader.py"
-channelscrapecmd = "../scrape_channel.sh"
+channelscrapecmd = "../scrape_channel_oo.sh"
 channelsfile = "./channels.txt"
 watchdogprog = "../watchdog.sh"
 holoscrapecmd = 'wget -nv --load-cookies=../cookies-schedule-hololive-tv.txt https://schedule.hololive.tv/lives -O auto-lives_tz'
 
 # dict: video_id => Video
 lives = {}
+channels = {}
 pids = {}
 general_stats = {}  # for debugging
 
 statuses = {'unknown', 'prelive', 'live', 'postlive', 'upload'}
 progress_statuses = {'unscraped', 'waiting', 'downloading', 'downloaded', 'missed', 'invalid', 'aborted'}
+
+
+def get_timestamp_now():
+    return dt.datetime.utcnow().timestamp()
 
 
 class TransitionException(Exception):
@@ -46,7 +51,7 @@ class Video:
         self.status = 'unknown'
         self.progress = 'unscraped'
         self.warned = False
-        self.init_timestamp = dt.datetime.utcnow().timestamp()
+        self.init_timestamp = get_timestamp_now()
         self.transition_timestamp = self.init_timestamp
         self.meta_timestamp = None
         # might delete one
@@ -84,7 +89,7 @@ class Video:
         else:
             self.did_status_print = False
 
-        self.transition_timestamp = dt.datetime.utcnow().timestamp()
+        self.transition_timestamp = get_timestamp_now()
         self.status = status
 
     def set_progress(self, progress: str):
@@ -112,7 +117,7 @@ class Video:
         else:
             self.did_progress_print = False
 
-        self.transition_timestamp = dt.datetime.utcnow().timestamp()
+        self.transition_timestamp = get_timestamp_now()
         self.progress = progress
 
     def reset_status(self):
@@ -131,7 +136,7 @@ class Video:
             if self.rawmeta:
                 del self.meta['raw']
 
-            self.meta_timestamp = dt.datetime.utcnow().timestamp()
+            self.meta_timestamp = get_timestamp_now()
 
     def rescrape_meta(self):
         """ Ignore known meta and fetch meta from YouTube. """
@@ -142,7 +147,61 @@ class Video:
             if self.rawmeta:
                 del self.meta['raw']
 
-            self.meta_timestamp = dt.datetime.utcnow().timestamp()
+            self.meta_timestamp = get_timestamp_now()
+
+
+class Channel:
+    """ Tracks basic details about a channel, such as the videos that belong to it. """
+    def __init__(self, channel_id):
+        self.channel_id = channel_id
+        self.videos = set()
+        self.init_timestamp = get_timestamp_now()
+        self.modify_timestamp = self.init_timestamp
+        self.did_discovery_print = False
+        self.batching = False
+        self.batch = None
+
+    def add_video(self, video: Video):
+        """ Add a video to our list, and possibly our current batch
+            Modifies timestamp on success
+        """
+        if video.video_id not in self.videos:
+            self.videos.add(video.video_id)
+            self.modify_timestamp = get_timestamp_now()
+            self.did_discovery_print = False
+            if self.batching:
+                self.batch.append(video.video_id)
+
+    def add_video_ids(self, video_ids: list):
+        """ Add videos to our list, and possibly our current batch
+            Modifies timestamp on success
+        """
+        new_videos = set(video_id) - self.videos
+        if len(new_videos) > 0:
+            self.modify_timestamp = get_timestamp_now()
+            self.did_discovery_print = False
+            if self.batching:
+                self.batch |= new_videos
+
+    def start_batch(self):
+        """ Declare that the next videos are a new batch """
+        if self.batching:
+            raise TransitionException("channel batch already started")
+
+        self.batching = True
+        self.batch = set()
+
+    def end_batch(self):
+        """ Finish declaring that the next videos are a new batch """
+        if not self.batching:
+            raise TransitionException("channel batch not started")
+
+        self.batching = False
+
+    def clear_batch(self):
+        """ Forget a batch (does not affect list of videos) """
+        self.batching = False
+        self.batch = set()
 
 
 # video statuses:
@@ -367,7 +426,14 @@ def update_lives_status_channellist(dlog):
     try:
         if os.path.exists(channelsfile):
             with open(channelsfile) as channellist:
-                for channel in [x.strip() for x in channellist.readlines()]:
+                for channel_id in [x.strip() for x in channellist.readlines()]:
+                    channel = None
+                    if channel_id in channels:
+                        channel = channels[channel_id]
+                    else:
+                        channel = Channel(channel_id)
+                        channels[channel_id] = channel
+
                     invoke_channel_scraper(channel)
                     process_channel_videos(channel, dlog)
 
@@ -376,14 +442,14 @@ def update_lives_status_channellist(dlog):
         traceback.print_exc()
 
 
-def invoke_channel_scraper(channel):
+def invoke_channel_scraper(channel: Channel):
     """ Scrape the channel for latest videos and batch-fetch meta state. """
     # Note: some arbitrary limits are set in the helper program that may need tweaking.
-    print("Scraping channel " + channel)
-    subprocess.run(channelscrapecmd + " " + channel, shell=True)
+    print("Scraping channel " + channel.channel_id)
+    subprocess.run(channelscrapecmd + " " + channel.channel_id, shell=True)
 
     print("Processing channel metadata")
-    with open("channel-cached/" + channel + ".meta.new") as allmeta:
+    with open("channel-cached/" + channel.channel_id + ".meta.new") as allmeta:
         metalist = []
 
         for jsonres in allmeta.readlines():
@@ -395,6 +461,7 @@ def invoke_channel_scraper(channel):
 
         for ytmeta in metalist:
             video_id = ytmeta["id"]
+            recall_video(video_id, filter_progress=True)
             video = lives.get(video_id)
             if video and video.meta is None:
                 video.meta = ytmeta
@@ -404,25 +471,29 @@ def invoke_channel_scraper(channel):
 
 
 # TODO: rewrite
-def process_channel_videos(channel, dlog):
+def process_channel_videos(channel: Channel, dlog):
     """ Read scraped channel video list, proccess each video ID, and persist the meta state. """
     newlives = 0
     knownlives = 0
     numignores = {}
+    channel_id = channel.channel_id
+    channel.did_discovery_print = True
 
     try:
         print("Processing channel videos")
-        with open("channel-cached/" + channel + ".url.all") as urls:
+        with open("channel-cached/" + channel_id + ".url.all") as urls:
             for video_id in [f.split(" ")[1].strip() for f in urls.readlines()]:
                 # Process each recent video
                 if video_id not in lives:
                     recall_video(video_id, filter_progress=True)
-                    video = lives[video_id]
 
-                if video_id not in lives:
-                    video = Video(video_id)
-                    lives[video_id] = video
-                    print("discovery: new live listed: " + video_id + " on channel " + channel, file=dlog, flush=True)
+                video = lives[video_id]
+                channel.add_video(video)
+
+                if not channel.did_discovery_print:
+                    print("discovery: new live listed: " + video_id + " on channel " + channel_id, file=dlog, flush=True)
+                    # TODO: accumulate multiple videos at once.
+                    channel.did_discovery_print = True
                     newlives += 1
                 else:
                     # known (not new) live listed (channel unaware)
@@ -442,9 +513,9 @@ def process_channel_videos(channel, dlog):
                 # process precached meta
                 if video.meta is None:
                     # We may be reloading old URLs after a program restart
-                    print("ytmeta cache miss for video " + video_id + " on channel " + channel)
+                    print("ytmeta cache miss for video " + video_id + " on channel " + channel_id)
                     cache_miss = True
-                    video.meta = rescrape(video_id)
+                    video.meta = rescrape(video)
                     if video.meta is None:
                         # scrape failed
                         continue
@@ -461,10 +532,10 @@ def process_channel_videos(channel, dlog):
         print("warning: unexpected I/O error when processing channel scrape results", file=sys.stderr)
         traceback.print_exc()
 
-    print("discovery: channels list: new lives on channel " + channel + " : " + str(newlives))
-    print("discovery: channels list: known lives on channel " + channel + " : " + str(knownlives))
+    print("discovery: channels list: new lives on channel " + channel_id + " : " + str(newlives))
+    print("discovery: channels list: known lives on channel " + channel_id + " : " + str(knownlives))
     for progress, count in numignores.items():
-        print("discovery: channels list: skipped ytmeta fetches on channel " + channel + " : " + str(count) + " skipped due to progress state '" + progress + "'")
+        print("discovery: channels list: skipped ytmeta fetches on channel " + channel_id + " : " + str(count) + " skipped due to progress state '" + progress + "'")
 
 
 def persist_meta(video: Video, fresh=False):
@@ -786,7 +857,7 @@ def invoke_downloader(video: Video):
 
         title = video.meta.get('title')
         uploader = video.meta.get('uploader')
-        channel_id = video.meta.get('live_starttime')
+        channel_id = video.meta.get('channel_id')
         starttime = video.meta.get('live_starttime')
         live_status = video.status
         currtimesafe = safen_path(nowtime.isoformat(timespec='seconds')) + "_UTC"
@@ -833,8 +904,12 @@ def _invoke_downloader_start(q, video_id, outfile):
     # Close the queue to flush it and avoid blocking the python process on exit.
     q.close()
     # Block this fork (hopefully not the main process)
-    proc.wait()
-    print("process fork " + str(pid) + " has waited")
+    try:
+        proc.wait()
+        print("process fork " + str(pid) + " has waited")
+    except KeyboardInterrupt:
+        print("process fork " + str(pid) + " was interrupted")
+        raise KeyboardInterrupt from None
 
 
 def delete_ytmeta_raw(video: Video, suffix=None):
@@ -952,6 +1027,9 @@ def handle_special_signal(signum, frame):
 
 # TODO
 if __name__ == '__main__':
+    mainpid = os.getpid()
+    print(f"{mainpid = }")
+
     # Prep storage and persistent state directories
     os.makedirs('oo', exist_ok=True)
     os.chdir('oo')
