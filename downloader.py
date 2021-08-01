@@ -29,11 +29,6 @@ ids = [
     '5qap5aO4i9A',  # live video
 ]
 
-downloader = ChatDownloader()  # modify this if cookies are necessary
-
-# Forcefully create a YouTube session
-youtube = downloader.create_session(YouTubeChatDownloader)
-
 EXIT_TRUE = 0
 EXIT_FALSE = 1
 EXIT_BADARG = 2
@@ -106,14 +101,21 @@ def run_loop(outname, video_id):
     started = False
     retried = False
     missed = False
+    num_msgs = 0
 
     output_file = f"{outname}.json"
     max_retries = 720   # 12 hours, with 60 second delays
     init_timestamp = dt.datetime.utcnow().timestamp()
 
+    downloader = ChatDownloader()  # modify this if cookies are necessary
+
+    # Forcefully create a YouTube session
+    youtube = downloader.create_session(YouTubeChatDownloader)
+
     try:
         details = youtube.get_video_data(video_id)
         is_live = details.get('status') in {'live', 'upcoming'}
+        print('(downloader) initial:', details.get('status'), details.get('video_type'), video_id)
     except AttributeError:
         print('(downloader) warning: chat_downloader out of date.', file=sys.stderr)
         details = None
@@ -139,14 +141,13 @@ def run_loop(outname, video_id):
                 else:
                     new_cookies = False
 
-                global downloader
-                global youtube
                 downloader = ChatDownloader()
                 youtube = downloader.create_session(YouTubeChatDownloader)
 
                 try:
                     details = youtube.get_video_data(video_id)
                     is_live = details.get('status') in {'live', 'upcoming'}
+                    print('(downloader) retry:', details.get('status'), details.get('video_type'), video_id)
                 except AttributeError:
                     details = None
                     is_live = None
@@ -167,14 +168,16 @@ def run_loop(outname, video_id):
 
                     print('(downloader) Downloading chat from live video:', video_id)
                     if paranoid_retry:
-                        print("(downloader) warning: chat downloader exited too soon!", file=sys.stderr)
+                        print("(downloader) warning: chat downloader exited too soon!", video_id, f"{num_msgs = }", file=sys.stderr)
                         retried = True
                         paranoid_retry = False
 
                     with open(f"{outname}.stdout", "a") as fp:
                         for message in chat:                        # iterate over messages
+                            num_msgs += 1
                             # print the formatted message
                             safe_print(chat.format(message), out=fp)
+                            fp.flush()
 
                     # finished... maybe? we should retry anyway.
                     paranoid_retry = True
