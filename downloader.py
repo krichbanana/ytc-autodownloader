@@ -139,6 +139,18 @@ def run_loop(outname, video_id):
                 else:
                     new_cookies = False
 
+                global downloader
+                global youtube
+                downloader = ChatDownloader()
+                youtube = downloader.create_session(YouTubeChatDownloader)
+
+                try:
+                    details = youtube.get_video_data(video_id)
+                    is_live = details.get('status') in {'live', 'upcoming'}
+                except AttributeError:
+                    details = None
+                    is_live = None
+
             retry = True
 
             try:
