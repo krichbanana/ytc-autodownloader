@@ -695,7 +695,7 @@ def invoke_downloader(video_id):
         outfile = get_outfile_basename(video_id)
         title = cached_ytmeta[video_id].get('title')
         uploader = cached_ytmeta[video_id].get('uploader')
-        channel_id = cached_ytmeta[video_id].get('live_starttime')
+        channel_id = cached_ytmeta[video_id].get('channel_id')
         starttime = cached_ytmeta[video_id].get('live_starttime')
         live_status = lives_status[video_id]
         currtimesafe = safen_path(dt.datetime.utcnow().isoformat(timespec='seconds')) + "_UTC"
