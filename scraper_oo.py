@@ -9,6 +9,8 @@ import datetime as dt
 import time
 import traceback
 import signal
+from chat_downloader import ChatDownloader
+from chat_downloader.sites import YouTubeChatDownloader
 
 
 # Debug switch
@@ -61,6 +63,7 @@ class Video:
         self.did_status_print = False
         self.did_progress_print = False
         self.did_discovery_print = False
+        self.did_meta_flush = False
 
     def set_status(self, status: str):
         """ Set the online status (live progress) of a video
@@ -88,6 +91,7 @@ class Video:
             self.warned = True
         else:
             self.did_status_print = False
+            self.did_meta_flush = False
 
         self.transition_timestamp = get_timestamp_now()
         self.status = status
@@ -116,6 +120,7 @@ class Video:
             self.warned = True
         else:
             self.did_progress_print = False
+            self.did_meta_flush = False
 
         self.transition_timestamp = get_timestamp_now()
         self.progress = progress
@@ -148,6 +153,7 @@ class Video:
                 del self.meta['raw']
 
             self.meta_timestamp = get_timestamp_now()
+            self.did_meta_flush = False
 
 
 class Channel:
@@ -170,7 +176,7 @@ class Channel:
             self.modify_timestamp = get_timestamp_now()
             self.did_discovery_print = False
             if self.batching:
-                self.batch.append(video.video_id)
+                self.batch.add(video.video_id)
 
     def add_video_ids(self, video_ids: list):
         """ Add videos to our list, and possibly our current batch
@@ -466,6 +472,7 @@ def invoke_channel_scraper(channel: Channel):
             if video and video.meta is None:
                 video.meta = ytmeta
                 video.rawmeta = ytmeta.get('raw')
+                video.did_meta_flush = False
             else:
                 print("ignoring ytmeta from channel scrape")
 
@@ -478,6 +485,8 @@ def process_channel_videos(channel: Channel, dlog):
     numignores = {}
     channel_id = channel.channel_id
     channel.did_discovery_print = True
+
+    channel.start_batch()
 
     try:
         print("Processing channel videos")
@@ -520,6 +529,7 @@ def process_channel_videos(channel: Channel, dlog):
                         # scrape failed
                         continue
                     video.rawmeta = video.meta.get('raw')
+                    video.did_meta_flush = False
 
                 process_ytmeta(video)
 
@@ -528,14 +538,23 @@ def process_channel_videos(channel: Channel, dlog):
                 if cache_miss or (saved_progress not in {'missed', 'invalid'} and saved_progress != video.progress):
                     persist_meta(video, fresh=True)
 
+                if not video.did_meta_flush:
+                    print("warning: didn't flush meta for channel video; flushing now", file=sys.stderr)
+                    persist_meta(video, fresh=True)
+
     except IOError:
         print("warning: unexpected I/O error when processing channel scrape results", file=sys.stderr)
         traceback.print_exc()
 
-    print("discovery: channels list: new lives on channel " + channel_id + " : " + str(newlives))
-    print("discovery: channels list: known lives on channel " + channel_id + " : " + str(knownlives))
-    for progress, count in numignores.items():
-        print("discovery: channels list: skipped ytmeta fetches on channel " + channel_id + " : " + str(count) + " skipped due to progress state '" + progress + "'")
+    channel.end_batch()
+
+    if len(channel.batch) > 0:
+        print("discovery: channels list: new lives on channel " + channel_id + " : " + str(newlives))
+        print("discovery: channels list: known lives on channel " + channel_id + " : " + str(knownlives))
+        for progress, count in numignores.items():
+            print("discovery: channels list: skipped ytmeta fetches on channel " + channel_id + " : " + str(count) + " skipped due to progress state '" + progress + "'")
+
+    channel.clear_batch()
 
 
 def persist_meta(video: Video, fresh=False):
@@ -564,6 +583,8 @@ def persist_meta(video: Video, fresh=False):
         ytmeta['ytmeta']['raw'] = video.rawmeta
         metafileyt = metafile + ".meta"
         metafileyt_status = metafileyt + "." + video.status
+        if video.rawmeta is None:
+            metafileyt_status += ".simple"
 
         print('Updating ' + metafileyt)
         with open(metafileyt, 'wb') as fp:
@@ -579,6 +600,8 @@ def persist_meta(video: Video, fresh=False):
         if pids.get(video_id) is not None:
             # Write dlpid to file
             fp.write(str(pids[video_id][1]).encode())
+
+    video.did_meta_flush = True
 
 
 # TODO: replace recall_meta with recall_video
@@ -632,11 +655,15 @@ def recall_video(video_id: str, filter_progress=False):
         if valid_ytmeta and not should_ignore:
             video.meta = ytmeta['ytmeta']
             video.rawmeta = ytmeta['ytmeta'].get('raw')
+            if video.rawmeta is not None:
+                del video.meta['raw']
 
         # unmigrated (monolithic file) format
         elif 'ytmeta' in meta:
             video.meta = ytmeta['ytmeta']
             video.rawmeta = ytmeta['ytmeta'].get('raw')
+            if video.rawmeta is not None:
+                del video.meta['raw']
 
             if DISABLE_PERSISTENCE:
                 return
@@ -974,12 +1001,26 @@ def process_one_status(video: Video, first=False):
 
             if not check_pid(dlpid):
                 print("status: dlpid no longer exists: " + video_id, file=statuslog)
-                video.set_progress('downloaded')
 
-                del pids[video_id]
-                persist_meta(video, fresh=True)
+                # Check before making this video unredownloadable
+                downloader = ChatDownloader()
+                youtube = downloader.create_session(YouTubeChatDownloader)
 
-                delete_ytmeta_raw(video)
+                details = None
+                try:
+                    details = youtube.get_video_data(video_id)
+                except Exception:
+                    pass
+                if details and details.get('status') in {'live', 'upcoming'}:
+                    print("warning: downloader seems you have exited prematurely. reinvoking:", video_id, file=sys.stderr)
+                    invoke_downloader(video)
+                else:
+                    video.set_progress('downloaded')
+
+                    del pids[video_id]
+                    persist_meta(video, fresh=True)
+
+                    delete_ytmeta_raw(video)
 
             else:
                 if first:
@@ -1001,6 +1042,10 @@ def process_one_status(video: Video, first=False):
             print("status: finished: " + video_id, file=statuslog)
 
             delete_ytmeta_raw(video)
+
+    if not video.did_meta_flush:
+        print("warning: didn't flush meta for video; flushing now", file=sys.stderr)
+        persist_meta(video, fresh=True)
 
     video.did_progress_print = True
     statuslog.flush()
