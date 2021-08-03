@@ -123,17 +123,18 @@ def run_loop(outname, video_id):
 
     try:
         while True:
-            if retry:
-                errors += 1
+            if retry or paranoid_retry:
+                if not paranoid_retry:
+                    errors += 1
 
-                if errors == 1:
-                    print('(downloader) Waiting 60 seconds before retrying:', video_id)
+                    if errors == 1:
+                        print('(downloader) Waiting 60 seconds before retrying:', video_id)
 
-                elif errors > max_retries:
-                    print('(downloader) Retry limit reached:', video_id)
-                    aborted = True
+                    elif errors > max_retries:
+                        print('(downloader) Retry limit reached:', video_id)
+                        aborted = True
 
-                    break
+                        break
 
                 # Retry members only video on new cookies immediately.
                 if not new_cookies:
@@ -147,8 +148,12 @@ def run_loop(outname, video_id):
                 try:
                     details = youtube.get_video_data(video_id)
                     is_live = details.get('status') in {'live', 'upcoming'}
-                    print('(downloader) retry:', details.get('status'), details.get('video_type'), video_id)
+                    if retry:
+                        print('(downloader) retry:', details.get('status'), details.get('video_type'), video_id)
+                    else:
+                        print('(downloader) retry (paranoid):', details.get('status'), details.get('video_type'), video_id)
                 except AttributeError:
+                    print('AttributeError', video_id, f"{details = }")
                     details = None
                     is_live = None
 
@@ -288,6 +293,8 @@ def run_loop(outname, video_id):
             write_status('finished+retried', video_id, init_timestamp)
         else:
             write_status('finished', video_id, init_timestamp)
+
+    print('(downloader) download stats:', num_msgs, "messages for video", video_id)
 
     # Compress logs after the downloader exits.
     if started:
