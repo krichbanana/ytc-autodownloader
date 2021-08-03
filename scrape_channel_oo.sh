@@ -61,11 +61,15 @@ cat "${tmppre}.url" "${tmppre}.57.url" >"${tmppre}.final.url"
 mkdir -p channel-cached
 touch "channel-cached/${channelbase}.url.all"
 
-echo "(channel scraper)" "$(wc -l "channel-cached/${channelbase}.url.all" | cut -d ' ' -f 1) entries in channel-cached/${channelbase}.url.all"
+oldcnt="$(wc -l "channel-cached/${channelbase}.url.all" | cut -d ' ' -f 1)"
 # 20 limit to prevent processing way too many videos (beware of pointless m3u8 requests)
 "$ytdlp_cmd" -s -q -j --ignore-no-formats-error --force-write-archive --download-archive "channel-cached/${channelbase}.url.all" --max-downloads 20 -a - <"${tmppre}.final.url" > "channel-cached/${channelbase}.meta.new"
-echo "(channel scraper)" "$(wc -l "channel-cached/${channelbase}.url.all" | cut -d ' ' -f 1) entries now in channel-cached/${channelbase}.url.all"
-echo "(channel scraper)" "$(wc -l "channel-cached/${channelbase}.meta.new" | cut -d ' ' -f 1) entries now in channel-cached/${channelbase}.meta.new"
+newcnt="$(wc -l "channel-cached/${channelbase}.url.all" | cut -d ' ' -f 1)"
+echo "(channel scraper)" "${newcnt?} (+$((newcnt - oldcnt))) entries now in channel-cached/${channelbase}.url.all"
+metacnt="$(wc -l "channel-cached/${channelbase}.meta.new" | cut -d ' ' -f 1)"
+if ((metacnt > 0)); then
+    echo "(channel scraper)" "${metacnt?} entries now in channel-cached/${channelbase}.meta.new"
+fi
 
 for suffix in .{501,502,57}{,.url} {.final,}.url; do
     rm "${tmppre}${suffix}"
