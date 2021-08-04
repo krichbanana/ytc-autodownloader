@@ -16,6 +16,7 @@ from chat_downloader.sites import YouTubeChatDownloader
 # Debug switch
 DISABLE_PERSISTENCE = False
 FORCE_RESCRAPE = False
+SCRAPER_SLEEP_INTERVAL = 30
 
 downloadmetacmd = "../yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
 downloadchatprgm = "../downloader.py"
@@ -434,7 +435,7 @@ def update_lives_status_channellist(dlog):
             with open(channelsfile) as channellist:
                 for channel_id in [x.strip().split()[0] for x in channellist.readlines()]:
                     channel = None
-                    use_ytdlp = True
+                    use_ytdlp = False
 
                     if channel_id in channels:
                         channel = channels[channel_id]
@@ -443,7 +444,6 @@ def update_lives_status_channellist(dlog):
                         channels[channel_id] = channel
                         # use chat_downloader to get initial video list
                         print("New channel: " + channel.channel_id)
-                        use_ytdlp = False
 
                     if not use_ytdlp:
                         try:
@@ -1284,7 +1284,7 @@ if __name__ == '__main__':
     print("Starting main loop", flush=True)
     while True:
         try:
-            time.sleep(300)
+            time.sleep(SCRAPER_SLEEP_INTERVAL)
             update_lives_status()
 
             # Try to make sure downloaders are tracked with correct state
