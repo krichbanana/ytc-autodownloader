@@ -809,8 +809,8 @@ def recall_video(video_id: str, filter_progress=False):
 
         # unmigrated (monolithic file) format
         elif 'ytmeta' in meta:
-            video.meta = ytmeta['ytmeta']
-            video.rawmeta = ytmeta['ytmeta'].get('raw')
+            video.meta = meta['ytmeta']
+            video.rawmeta = meta['ytmeta'].get('raw')
             if video.rawmeta is not None:
                 del video.meta['raw']
 
