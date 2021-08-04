@@ -1120,6 +1120,7 @@ def process_one_status(video: Video, first=False):
         print("status: just invoked: " + video_id, file=statuslog)
         if video.meta is None:
             print("warning: video.meta missing for video " + video_id, file=sys.stderr)
+            video.prepare_meta()
 
         invoke_downloader(video)
 
