@@ -432,20 +432,166 @@ def update_lives_status_channellist(dlog):
     try:
         if os.path.exists(channelsfile):
             with open(channelsfile) as channellist:
-                for channel_id in [x.strip() for x in channellist.readlines()]:
+                for channel_id in [x.strip().split()[0] for x in channellist.readlines()]:
                     channel = None
+                    use_ytdlp = True
+
                     if channel_id in channels:
                         channel = channels[channel_id]
                     else:
                         channel = Channel(channel_id)
                         channels[channel_id] = channel
+                        # use chat_downloader to get initial video list
+                        print("New channel: " + channel.channel_id)
+                        use_ytdlp = False
 
-                    invoke_channel_scraper(channel)
-                    process_channel_videos(channel, dlog)
+                    if not use_ytdlp:
+                        try:
+                            scrape_and_process_channel_chatdownloader(channel, dlog)
+                        except Exception:
+                            print("failed to scrape channel list with chat_downloader:", channel_id, file=sys.stderr)
+                            traceback.print_exc()
+                            use_ytdlp = True
+
+                    if use_ytdlp:
+                        invoke_channel_scraper(channel)
+                        process_channel_videos(channel, dlog)
 
     except Exception:
         print("warning: unexpected error with processing channels.txt", file=sys.stderr)
         traceback.print_exc()
+
+
+def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
+    """ Use chat_downloader's get_user_videos() to quickly get channel videos and live statuses. """
+
+    downloader = ChatDownloader()
+
+    # Forcefully create a YouTube session
+    youtube = downloader.create_session(YouTubeChatDownloader)
+
+    limit = 30
+    count = 0
+    valid_count = 0
+    skipped = 0
+
+    seen_vids = set()
+
+    # We don't just check 'all' since the list used may be slow to update.
+    for video_status in ['upcoming', 'live', 'all']:
+        for basic_video_details in youtube.get_user_videos(channel_id=channel.channel_id, video_status=video_status):
+            status = 'unknown'
+            status_hint = None
+
+            video_id = basic_video_details.get('video_id')
+
+            try:
+                status_hint = basic_video_details['view_count'].split()[1]
+                if status_hint == "waiting":
+                    status = 'prelive'
+                elif status_hint == "watching":
+                    status = 'live'
+                elif status_hint == "views":
+                    pass
+                else:
+                    print(f"warning: could not understand status hint ({status_hint = })", file=sys.stderr)
+                    raise RuntimeError('could not extract status hint')
+
+            except Exception:
+                print("warning: could not extract status hint", file=sys.stderr)
+                raise
+
+            if video_id in seen_vids:
+                continue
+            else:
+                count += 1
+
+            if status == 'unknown':
+                # ignore past streams/uploads
+                continue
+
+            valid_count += 1
+
+            if video_id in lives and lives[video_id].progress != 'unscraped':
+                skipped += 1
+                continue
+
+            print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}): " + video_id, file=sys.stdout, flush=True)
+            print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}): " + video_id, file=dlog, flush=True)
+
+            video_data, player_response, *_ = youtube._parse_video_data(video_id)
+            microformat = player_response['microformat']['playerMicroformatRenderer']
+            video_details = player_response['videoDetails']
+
+            # keep only known useful fields, junk spam/useless fields
+            old_player_response = player_response
+            player_response = {}
+            for key in ['playabilityStatus', 'videoDetails', 'microformat']:
+                player_response[key] = old_player_response[key]
+            for key in ['streamingData']:
+                player_response[key] = old_player_response.get(key)
+            del old_player_response
+
+            if video_id not in lives:
+                lives[video_id] = Video(video_id)
+
+            video = lives[video_id]
+
+            channel.add_video(video)
+
+            # "export" the fields manually here
+            meta = {}
+
+            meta['id'] = video_id
+            meta['channel_id'] = channel.channel_id
+            meta['title'] = basic_video_details.get('title')
+            meta['raw'] = player_response  # I think this is different from yt-dlp infodict output
+            meta['description'] = microformat['description']['simpleText']
+            meta['uploader'] = video_data['author']
+            meta['duration'] = video_data['duration']
+
+            meta['is_live'] = video_details.get('isLive') is True
+            meta['is_upcoming'] = video_details.get('isUpcoming') is True
+            meta['is_livestream'] = video_details.get('isLiveContent') is True
+
+            try:
+                meta['live_starttime'] = int(dt.datetime.fromisoformat(microformat['liveBroadcastDetails']['startTimestamp']).timestamp() + 0.1)
+            except Exception:
+                meta['live_starttime'] = None
+
+            try:
+                meta['live_endtime'] = int(dt.datetime.fromisoformat(microformat['liveBroadcastDetails']['endTimestamp']).timestamp() + 0.1)
+            except Exception:
+                meta['live_endtime'] = None
+
+            if meta['is_live']:
+                meta['live_status'] = 'is_live'
+            elif meta['is_upcoming']:
+                meta['live_status'] = 'is_upcoming'
+            elif meta['is_livestream']:
+                meta['live_status'] = 'was_live'
+            else:
+                meta['live_status'] = 'not_live'
+
+            video.set_status(status)
+            video.reset_progress()
+            video.set_progress('waiting')
+            video.meta = meta
+            video.rawmeta = meta.get('raw')
+            video.meta_timestamp = get_timestamp_now()
+
+            persist_meta(video, fresh=True)
+
+            try:
+                del meta['raw']
+            except KeyError:
+                pass
+
+            if count >= limit:
+                print(f"limit of {limit} reached")
+                break
+
+    print(f"discovery: channels list (via chat_downloader): channel {channel.channel_id} new upcoming/live lives: " + str(valid_count) + "/" + str(count) + " (" + str(skipped) + " known)")
 
 
 def invoke_channel_scraper(channel: Channel):
@@ -454,7 +600,6 @@ def invoke_channel_scraper(channel: Channel):
     print("Scraping channel " + channel.channel_id)
     subprocess.run(channelscrapecmd + " " + channel.channel_id, shell=True)
 
-    print("Processing channel metadata")
     with open("channel-cached/" + channel.channel_id + ".meta.new") as allmeta:
         metalist = []
 
@@ -489,7 +634,6 @@ def process_channel_videos(channel: Channel, dlog):
     channel.start_batch()
 
     try:
-        print("Processing channel videos")
         with open("channel-cached/" + channel_id + ".url.all") as urls:
             for video_id in [f.split(" ")[1].strip() for f in urls.readlines()]:
                 # Process each recent video
@@ -539,6 +683,7 @@ def process_channel_videos(channel: Channel, dlog):
                     persist_meta(video, fresh=True)
 
                 if not video.did_meta_flush:
+                    # Essentially nerfs the above performance optimization...
                     print("warning: didn't flush meta for channel video; flushing now", file=sys.stderr)
                     persist_meta(video, fresh=True)
 
@@ -581,6 +726,9 @@ def persist_meta(video: Video, fresh=False):
         ytmeta = {}
         ytmeta['ytmeta'] = video.meta
         ytmeta['ytmeta']['raw'] = video.rawmeta
+        if video.rawmeta is None:
+            ytmeta['ytmeta']['raw'] = video.meta.get('raw')
+
         metafileyt = metafile + ".meta"
         metafileyt_status = metafileyt + "." + video.status
         if video.rawmeta is None:
@@ -589,6 +737,7 @@ def persist_meta(video: Video, fresh=False):
         print('Updating ' + metafileyt)
         with open(metafileyt, 'wb') as fp:
             fp.write(json.dumps(ytmeta, indent=1).encode())
+
         print('Updating ' + metafileyt_status)
         with open(metafileyt_status, 'wb') as fp:
             fp.write(json.dumps(ytmeta, indent=1).encode())
@@ -703,9 +852,6 @@ def process_ytmeta(video: Video):
 
 def maybe_rescrape(video: Video):
     saved_progress = video.progress
-    if video.progress in {'unscraped', 'waiting'}:
-        video.reset_progress()
-
     if video.progress == 'unscraped':
         video.rescrape_meta()
         if video.meta is None:
@@ -720,7 +866,7 @@ def maybe_rescrape(video: Video):
 
 
 def maybe_rescrape_initially(video: Video):
-    if video.progress in {'unscraped', 'waiting', 'downloading'}:
+    if video.progress == 'downloading':
         video.reset_progress()
 
     if video.progress == 'unscraped' or FORCE_RESCRAPE:
@@ -865,7 +1011,16 @@ def process_dlpid_queue():
     """ Process (empty) the queue of PIDs from newly invoked downloaders and update their state. """
     while not q.empty():
         (pid, dlpid, vid) = q.get()
-        lives[vid].set_progress('downloading')
+
+        try:
+            lives[vid].set_progress('downloading')
+        except TransitionException:
+            if lives[vid].progress in {'unscraped', 'waiting', 'downloading'}:
+                print(f"warning: discarding weird progress status {lives[vid].progress}, setting to downloading:", vid)
+                lives[vid].reset_progress()
+                lives[vid].set_progress('waiting')
+                lives[vid].set_progress('downloading')
+
         pids[vid] = (pid, dlpid)
         persist_meta(lives[vid])
 
