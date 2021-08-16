@@ -16,7 +16,8 @@ from chat_downloader.sites import YouTubeChatDownloader
 # Debug switch
 DISABLE_PERSISTENCE = False
 FORCE_RESCRAPE = False
-SCRAPER_SLEEP_INTERVAL = 30
+SCRAPER_SLEEP_INTERVAL = 120
+CHANNEL_SCRAPE_LIMIT = 30
 
 downloadmetacmd = "../yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
 downloadchatprgm = "../downloader.py"
@@ -470,8 +471,9 @@ def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
     # Forcefully create a YouTube session
     youtube = downloader.create_session(YouTubeChatDownloader)
 
-    limit = 30
+    limit = CHANNEL_SCRAPE_LIMIT
     count = 0
+    perpage_count = 0
     valid_count = 0
     skipped = 0
 
@@ -479,6 +481,8 @@ def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
 
     # We don't just check 'all' since the list used may be slow to update.
     for video_status in ['upcoming', 'live', 'all']:
+        perpage_count = 0
+        time.sleep(0.1)
         for basic_video_details in youtube.get_user_videos(channel_id=channel.channel_id, video_status=video_status):
             status = 'unknown'
             status_hint = None
@@ -497,9 +501,24 @@ def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
                     print(f"warning: could not understand status hint ({status_hint = })", file=sys.stderr)
                     raise RuntimeError('could not extract status hint')
 
+            except KeyError:
+                print(f"warning: status hint extraction: unexpected KeyError... {count = } {perpage_count = } (+1) ... {valid_count = } {skipped = } {limit = } ... {seen_vids = } ... {basic_video_details = })", file=sys.stderr)
+                traceback.print_exc()
+
             except Exception:
                 print("warning: could not extract status hint", file=sys.stderr)
                 raise
+
+            perpage_count += 1
+            if perpage_count >= limit:
+                if video_id in seen_vids or status == 'unknown' or (video_id in lives and lives[video_id].progress != 'unscraped'):
+                    # would continue
+                    print(f"perpage limit of {limit} reached:", video_status)
+                    if video_id not in seen_vids:
+                        count += 1
+                    if status != 'unknown' and not (video_id in lives and lives[video_id].progress != 'unscraped'):
+                        skipped += 1
+                    break
 
             if video_id in seen_vids:
                 continue
@@ -587,9 +606,13 @@ def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
             except KeyError:
                 pass
 
-            if count >= limit:
-                print(f"limit of {limit} reached")
+            if perpage_count >= limit:
+                print(f"perpage limit of {limit} reached:", video_status)
                 break
+
+        if count >= limit:
+            print(f"limit of {limit} reached")
+            break
 
     print(f"discovery: channels list (via chat_downloader): channel {channel.channel_id} new upcoming/live lives: " + str(valid_count) + "/" + str(count) + " (" + str(skipped) + " known)")
 
