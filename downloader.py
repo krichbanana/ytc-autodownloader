@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import sys
+import os
 import time
 import subprocess
 import signal
@@ -83,9 +84,27 @@ def write_status(final_status: str, video_id: str, init_timestamp):
         fp.write(json.dumps(res))
 
 
-def try_for_cookies():
-    # TODO
-    pass
+def try_for_cookies(video_id=None, channel_id=None):
+    cookie_file = None
+    prefixes = ('', 'oo/', '../')
+
+    candidates = []
+    if video_id is not None:
+        for prefix in prefixes:
+            candidates.append(prefix + video_id + ".txt")
+
+    if channel_id is not None:
+        for prefix in prefixes:
+            candidates.append(prefix + channel_id + ".txt")
+
+    for prefix in prefixes:
+        candidates.append(prefix + "cookies.txt")
+
+    for path in candidates:
+        if os.path.exists(path):
+            return cookie_file
+
+    return None
 
 
 def run_loop(outname, video_id):
@@ -96,6 +115,7 @@ def run_loop(outname, video_id):
     paranoid_retry = False
     cookies = None
     new_cookies = False
+    channel_id = None
     # reporting only
     aborted = False
     started = False
@@ -107,7 +127,8 @@ def run_loop(outname, video_id):
     max_retries = 720   # 12 hours, with 60 second delays
     init_timestamp = dt.datetime.utcnow().timestamp()
 
-    downloader = ChatDownloader()  # modify this if cookies are necessary
+    # Don't pass cookies if we don't have to.
+    downloader = ChatDownloader(cookies=None)
 
     # Forcefully create a YouTube session
     youtube = downloader.create_session(YouTubeChatDownloader)
@@ -115,7 +136,18 @@ def run_loop(outname, video_id):
     try:
         details = youtube.get_video_data(video_id)
         is_live = details.get('status') in {'live', 'upcoming'}
+        channel_id = details.get('author_id')
         print('(downloader) initial:', details.get('status'), details.get('video_type'), video_id)
+        print('(downloader) title:', details.get('title'))
+        print('(downloader) author:', details.get('author'))
+        # No continuation? Possibly members-only.
+        if details.get('continuation_info') == {}:
+            cookies = try_for_cookies(video_id=video_id, channel_id=channel_id)
+            if cookies is not None:
+                print('(downloader) providing cookies since chat is missing:', cookies)
+                downloader = ChatDownloader(cookies=cookies)
+                youtube = downloader.create_session(YouTubeChatDownloader)
+
     except AttributeError:
         print('(downloader) warning: chat_downloader out of date.', file=sys.stderr)
         details = None
@@ -142,7 +174,8 @@ def run_loop(outname, video_id):
                 else:
                     new_cookies = False
 
-                downloader = ChatDownloader()
+                downloader = ChatDownloader(cookies=cookies)
+
                 youtube = downloader.create_session(YouTubeChatDownloader)
 
                 try:
@@ -152,6 +185,7 @@ def run_loop(outname, video_id):
                         print('(downloader) retry:', details.get('status'), details.get('video_type'), video_id)
                     else:
                         print('(downloader) retry (paranoid):', details.get('status'), details.get('video_type'), video_id)
+
                 except AttributeError:
                     print('AttributeError', video_id, f"{details = }")
                     details = None
@@ -213,7 +247,7 @@ def run_loop(outname, video_id):
 
                         break
 
-                next_cookies = try_for_cookies()
+                next_cookies = try_for_cookies(video_id=video_id, channel_id=channel_id)
                 new_cookies = False
                 if next_cookies is not None:
                     if cookies is None:
