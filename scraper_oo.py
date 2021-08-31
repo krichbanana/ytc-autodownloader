@@ -1088,6 +1088,7 @@ def _invoke_downloader_start(q, video_id, outfile):
 
     q.put((pid, proc.pid, video_id))
     # Close the queue to flush it and avoid blocking the python process on exit.
+    time.sleep(0.1)
     q.close()
     # Block this fork (hopefully not the main process)
     try:
@@ -1156,6 +1157,8 @@ def process_one_status(video: Video, first=False):
         if first:
             print("status: downloading (but this is wrong; we just started!): " + video_id, file=statuslog)
 
+        wants_rescrape = False
+
         if pids.get(video_id):
             (pypid, dlpid) = pids[video_id]
 
@@ -1163,24 +1166,7 @@ def process_one_status(video: Video, first=False):
                 print("status: dlpid no longer exists: " + video_id, file=statuslog)
 
                 # Check before making this video unredownloadable
-                downloader = ChatDownloader()
-                youtube = downloader.create_session(YouTubeChatDownloader)
-
-                details = None
-                try:
-                    details = youtube.get_video_data(video_id)
-                except Exception:
-                    pass
-                if details and details.get('status') in {'live', 'upcoming'}:
-                    print("warning: downloader seems you have exited prematurely. reinvoking:", video_id, file=sys.stderr)
-                    invoke_downloader(video)
-                else:
-                    video.set_progress('downloaded')
-
-                    del pids[video_id]
-                    persist_meta(video, fresh=True)
-
-                    delete_ytmeta_raw(video)
+                wants_rescrape = True
 
             else:
                 if first:
@@ -1193,7 +1179,35 @@ def process_one_status(video: Video, first=False):
                 print("warning: pid lookup for video " + video_id + " failed (initial load, should be unreachable).", file=sys.stderr)
             else:
                 print("warning: pid lookup for video " + video_id + " failed.", file=sys.stderr)
+
             print("status: unknown: " + video_id, file=statuslog)
+
+            wants_rescrape = True
+
+        if wants_rescrape:
+            # Check status
+            downloader = ChatDownloader()
+            youtube = downloader.create_session(YouTubeChatDownloader)
+
+            details = None
+            try:
+                details = youtube.get_video_data(video_id)
+            except Exception:
+                pass
+
+            if details and details.get('status') in {'live', 'upcoming'}:
+                print("warning: downloader seems to have exited prematurely. reinvoking:", video_id, file=sys.stderr)
+                invoke_downloader(video)
+            else:
+                video.set_progress('downloaded')
+
+                try:
+                    del pids[video_id]
+                except KeyError:
+                    pass
+
+                persist_meta(video, fresh=True)
+                delete_ytmeta_raw(video)
 
     elif video.progress == 'downloaded':
         if first:
