@@ -297,13 +297,16 @@ def extract_video_id_from_yturl(href):
     video_id = None
 
     try:
+        start = -1
         if href.find('youtube.com/watch') != -1:
-            video_id = href[(href.find('v=') + 2):]
+            start = href.find('v=') + 2
         elif href.find('youtu.be/') != -1:
-            video_id = href[(href.find('be/') + 3):]
+            start = href.find('be/') + 3
 
-        if len(video_id) < 2:
+        if start == -1:
             return None
+
+        video_id = href[start:start+11]
 
         return video_id
 
