@@ -12,6 +12,8 @@ import signal
 from chat_downloader import ChatDownloader
 from chat_downloader.sites import YouTubeChatDownloader
 
+from utils import extract_video_id_from_yturl
+
 
 # Debug switch
 DISABLE_PERSISTENCE = False
@@ -288,30 +290,6 @@ def update_lives_status():
         except Exception:
             print("warning: exception during channellist scrape. Network error?")
             traceback.print_exc()
-
-
-def extract_video_id_from_yturl(href):
-    """ Extract a Youtube video id from a given URL
-        Returns None on error or failure.
-    """
-    video_id = None
-
-    try:
-        start = -1
-        if href.find('youtube.com/watch') != -1:
-            start = href.find('v=') + 2
-        elif href.find('youtu.be/') != -1:
-            start = href.find('be/') + 3
-
-        if start == -1:
-            return None
-
-        video_id = href[start:start+11]
-
-        return video_id
-
-    except Exception:
-        return None
 
 
 def update_lives_status_holoschedule(dlog):
