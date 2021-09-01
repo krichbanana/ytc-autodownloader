@@ -21,6 +21,11 @@ from chat_downloader.utils.core import (
     safe_print
 )
 
+from utils import (
+    create_file_lock,
+    remove_file_lock
+)
+
 # testing
 ids = [
     'p1KolyCqICI',  # past broadcast
@@ -332,8 +337,11 @@ def run_loop(outname, video_id):
 
     # Compress logs after the downloader exits.
     if started:
+        # Throttle compress tasks to avoid stacking CPU and memory usage
+        fd = create_file_lock("compress.lock")
         for ext in ['.json', '.stdout']:
             compress(outname + ext)
+        remove_file_lock(fd)
 
 
 def handle_special_signal(signum, frame):
