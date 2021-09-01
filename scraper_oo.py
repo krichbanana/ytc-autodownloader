@@ -1266,8 +1266,11 @@ if __name__ == '__main__':
 
     with open("discovery.txt", "a") as dlog:
         print("program started", file=dlog, flush=True)
+        dlog.flush()
     statuslog = open("status.txt", "a")
     print("program started", file=statuslog)
+    statuslog.flush()
+    os.fsync(statuslog.fileno())
 
     if True:
         try:
@@ -1291,6 +1294,7 @@ if __name__ == '__main__':
 
         except KeyboardInterrupt:
             statuslog.flush()
+            os.fsync(statuslog.fileno())
             raise
 
         except Exception as exc:
