@@ -24,6 +24,7 @@ CHANNEL_SCRAPE_LIMIT = 30
 downloadmetacmd = "../yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
 downloadchatprgm = "../downloader.py"
 channelscrapecmd = "../scrape_channel_oo.sh"
+channelpostscrapecmd = "../scrape_community_tab.sh"
 channelsfile = "./channels.txt"
 watchdogprog = "../watchdog.sh"
 holoscrapecmd = 'wget -nv --load-cookies=../cookies-schedule-hololive-tv.txt https://schedule.hololive.tv/lives -O auto-lives_tz'
@@ -439,6 +440,10 @@ def update_lives_status_channellist(dlog):
                         invoke_channel_scraper(channel)
                         process_channel_videos(channel, dlog)
 
+                    # Scrape community tab page for links (esp. member stream links)
+                    invoke_channel_scraper(channel, community_scrape=True)
+                    process_channel_videos(channel, dlog)
+
     except Exception:
         print("warning: unexpected error with processing channels.txt", file=sys.stderr)
         traceback.print_exc()
@@ -598,11 +603,15 @@ def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
     print(f"discovery: channels list (via chat_downloader): channel {channel.channel_id} new upcoming/live lives: " + str(valid_count) + "/" + str(count) + " (" + str(skipped) + " known)")
 
 
-def invoke_channel_scraper(channel: Channel):
+def invoke_channel_scraper(channel: Channel, community_scrape=False):
     """ Scrape the channel for latest videos and batch-fetch meta state. """
     # Note: some arbitrary limits are set in the helper program that may need tweaking.
-    print("Scraping channel " + channel.channel_id)
-    subprocess.run(channelscrapecmd + " " + channel.channel_id, shell=True)
+    if not community_scrape:
+        print("Scraping channel " + channel.channel_id)
+        subprocess.run(channelscrapecmd + " " + channel.channel_id, shell=True)
+    else:
+        print("Scraping channel community pages " + channel.channel_id)
+        subprocess.run(channelpostscrapecmd + " " + channel.channel_id, shell=True)
 
     with open("channel-cached/" + channel.channel_id + ".meta.new") as allmeta:
         metalist = []
@@ -611,7 +620,10 @@ def invoke_channel_scraper(channel: Channel):
             try:
                 metalist.append(export_rescrape_fields(json.loads(jsonres)))
             except Exception:
-                print("warning: exception in channel scrape task (corrupt meta?)", file=sys.stderr)
+                if community_scrape:
+                    print("warning: exception in channel post scrape task (corrupt meta?)", file=sys.stderr)
+                else:
+                    print("warning: exception in channel scrape task (corrupt meta?)", file=sys.stderr)
                 traceback.print_exc()
 
         for ytmeta in metalist:
@@ -623,7 +635,10 @@ def invoke_channel_scraper(channel: Channel):
                 video.rawmeta = ytmeta.get('raw')
                 video.did_meta_flush = False
             else:
-                print("ignoring ytmeta from channel scrape")
+                if community_scrape:
+                    print("ignoring ytmeta from channel post scrape")
+                else:
+                    print("ignoring ytmeta from channel scrape")
 
 
 # TODO: rewrite
