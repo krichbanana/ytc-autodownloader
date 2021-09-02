@@ -721,7 +721,7 @@ def process_channel_videos(channel: Channel, dlog):
     channel.clear_batch()
 
 
-def persist_meta(video: Video, fresh=False):
+def persist_meta(video: Video, fresh=False, clobber=True):
     video_id = video.video_id
 
     metafile = 'by-video-id/' + video_id
@@ -731,7 +731,9 @@ def persist_meta(video: Video, fresh=False):
         print('NOT updating ' + metafile)
         return
 
-    print('Updating ' + metafile)
+    if clobber or not os.path.exists(metafile):
+        print('Updating ' + metafile)
+
     pidfile = 'pid/' + video_id
     meta = {}
     meta['status'] = video.status
@@ -753,21 +755,33 @@ def persist_meta(video: Video, fresh=False):
         if video.rawmeta is None:
             metafileyt_status += ".simple"
 
-        print('Updating ' + metafileyt)
-        with open(metafileyt, 'wb') as fp:
-            fp.write(json.dumps(ytmeta, indent=1).encode())
+        try:
+            if clobber or not os.path.exists(metafileyt):
+                print('Updating ' + metafileyt)
+                with open(metafileyt, 'wb') as fp:
+                    fp.write(json.dumps(ytmeta, indent=1).encode())
 
-        print('Updating ' + metafileyt_status)
-        with open(metafileyt_status, 'wb') as fp:
-            fp.write(json.dumps(ytmeta, indent=1).encode())
+            if clobber or not os.path.exists(metafileyt_status):
+                print('Updating ' + metafileyt_status)
+                with open(metafileyt_status, 'wb') as fp:
+                    fp.write(json.dumps(ytmeta, indent=1).encode())
+        finally:
+            try:
+                # Since we don't deep-copy, don't keep 'raw' in the meta dict.
+                if video.rawmeta is not None:
+                    del video.meta['raw']
+            except KeyError:
+                pass
 
-    with open(metafile, 'wb') as fp:
-        fp.write(json.dumps(meta, indent=1).encode())
+    if clobber or not os.path.exists(metafile):
+        with open(metafile, 'wb') as fp:
+            fp.write(json.dumps(meta, indent=1).encode())
 
-    with open(pidfile, 'wb') as fp:
-        if pids.get(video_id) is not None:
-            # Write dlpid to file
-            fp.write(str(pids[video_id][1]).encode())
+    if clobber or not os.path.exists(pidfile):
+        with open(pidfile, 'wb') as fp:
+            if pids.get(video_id) is not None:
+                # Write dlpid to file
+                fp.write(str(pids[video_id][1]).encode())
 
     video.did_meta_flush = True
 
@@ -988,6 +1002,7 @@ def invoke_scraper(video_id):
     if video_id not in lives:
         raise ValueError('invalid video_id')
 
+    proc = None
     try:
         cmdline = downloadmetacmd + "-- " + video_id
         print(cmdline.split())
