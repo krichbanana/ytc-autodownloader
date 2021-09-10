@@ -30,13 +30,17 @@ if [[ "$ecode" != 0 ]]; then
 fi
 jq -r <"${tmppre}.community" .url > "${tmppre}.community.url"
 
-if [[ ! -f "${tmppre}.url" ]]; then
-    echo "(channel tab scraper) there doesn't seem to be any live or upcoming livestreams"
-    touch "${tmppre}.url"
+# Bail out early if out actions are futile to reduce console spam.
+if [[ ! -f "${tmppre}.community.url" ]]; then
+    echo "(channel tab scraper) there doesn't seem to be any videos on the community tab, aborting."
+    for suffix in .community {.community,.final}.url; do
+        rm "${tmppre}${suffix}" 2>/dev/null
+    done
+    exit 1
 fi
 
 # Create an onmilist of urls (with possible duplicates)
-cat "${tmppre}.url" "${tmppre}.community.url" >"${tmppre}.final.url"
+mv "${tmppre}.community.url" "${tmppre}.final.url"
 
 mkdir -p channel-cached
 touch "channel-cached/${channelbase}.url.all"
@@ -51,7 +55,7 @@ if ((metacnt > 0)); then
     echo "(channel tab scraper)" "${metacnt?} entries now in channel-cached/${channelbase}.meta.new"
 fi
 
-for suffix in .community{.final,}.url; do
+for suffix in .community .final.url; do
     rm "${tmppre}${suffix}"
 done
 
