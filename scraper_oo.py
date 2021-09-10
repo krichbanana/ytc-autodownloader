@@ -13,12 +13,17 @@ from chat_downloader import ChatDownloader
 from chat_downloader.sites import YouTubeChatDownloader
 
 from utils import extract_video_id_from_yturl
+try:
+    from write_cgroup import write_cgroup
+except ImportError:
+    def write_cgroup(mainpid):
+        pass
 
 
 # Debug switch
 DISABLE_PERSISTENCE = False
 FORCE_RESCRAPE = False
-SCRAPER_SLEEP_INTERVAL = 120
+SCRAPER_SLEEP_INTERVAL = 120 * 5 / 2
 CHANNEL_SCRAPE_LIMIT = 30
 
 downloadmetacmd = "../yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
@@ -152,13 +157,17 @@ class Video:
         """ Ignore known meta and fetch meta from YouTube. """
         meta = rescrape(self)
         if meta:
+            lastmeta = self.meta
             self.meta = meta
             self.rawmeta = self.meta.get('raw')
             if self.rawmeta:
                 del self.meta['raw']
 
-            self.meta_timestamp = get_timestamp_now()
-            self.did_meta_flush = False
+            # Avoid a case where failing meta scrapes kept flushing.
+            is_simple = self.meta is not None and self.rawmeta is None
+            if not is_simple or meta != lastmeta:
+                self.meta_timestamp = get_timestamp_now()
+                self.did_meta_flush = False
 
 
 class Channel:
@@ -441,12 +450,105 @@ def update_lives_status_channellist(dlog):
                         process_channel_videos(channel, dlog)
 
                     # Scrape community tab page for links (esp. member stream links)
-                    invoke_channel_scraper(channel, community_scrape=True)
-                    process_channel_videos(channel, dlog)
+                    # Currently only try this when cookies are provided.
+                    if os.path.exists(channel_id + ".txt"):
+                        invoke_channel_scraper(channel, community_scrape=True)
+                        process_channel_videos(channel, dlog)
 
     except Exception:
         print("warning: unexpected error with processing channels.txt", file=sys.stderr)
         traceback.print_exc()
+
+
+def rescrape_chatdownloader(video: Video, channel=None, youtube=None):
+    """ rescrape, but using chat_downloader """
+    video_id = video.video_id
+    video_data, player_response, status = invoke_scraper_chatdownloader(video_id, youtube)
+    microformat = player_response['microformat']['playerMicroformatRenderer']
+    video_details = player_response['videoDetails']
+
+    # keep only known useful fields, junk spam/useless fields
+    old_player_response = player_response
+    player_response = {}
+    for key in ['playabilityStatus', 'videoDetails', 'microformat']:
+        player_response[key] = old_player_response[key]
+    for key in ['streamingData']:
+        player_response[key] = old_player_response.get(key)
+    del old_player_response
+
+    # "export" the fields manually here
+    meta = {}
+
+    meta['id'] = video_id
+    meta['referrer_channel_id'] = channel and channel.channel_id
+    meta['channel_id'] = video_details['channelId']
+    meta['title'] = microformat['title']['simpleText']
+    meta['raw'] = player_response  # I think this is different from yt-dlp infodict output
+    meta['description'] = microformat['description']['simpleText']
+    meta['uploader'] = video_data['author']
+    meta['duration'] = video_data['duration']
+
+    meta['is_live'] = video_details.get('isLive') is True
+    meta['is_upcoming'] = video_details.get('isUpcoming') is True
+    meta['is_livestream'] = video_details.get('isLiveContent') is True
+
+    try:
+        meta['live_starttime'] = int(dt.datetime.fromisoformat(microformat['liveBroadcastDetails']['startTimestamp']).timestamp() + 0.1)
+    except Exception:
+        meta['live_starttime'] = None
+
+    try:
+        meta['live_endtime'] = int(dt.datetime.fromisoformat(microformat['liveBroadcastDetails']['endTimestamp']).timestamp() + 0.1)
+    except Exception:
+        meta['live_endtime'] = None
+
+    if meta['is_live']:
+        meta['live_status'] = 'is_live'
+    elif meta['is_upcoming']:
+        meta['live_status'] = 'is_upcoming'
+    elif meta['is_livestream']:
+        meta['live_status'] = 'was_live'
+    else:
+        meta['live_status'] = 'not_live'
+
+    video.set_status(status)
+    video.reset_progress()
+    video.set_progress('waiting')
+    video.meta = meta
+    video.rawmeta = meta.get('raw')
+    video.meta_timestamp = get_timestamp_now()
+
+    try:
+        del meta['raw']
+    except KeyError:
+        pass
+
+
+def invoke_scraper_chatdownloader(video_id, youtube=None, skip_status=False):
+    """ invoke_scraper, but use chat_downloader's python interface instead of forking and calling yt-dlp """
+    if youtube is None:
+        downloader = ChatDownloader()
+        youtube = downloader.create_session(YouTubeChatDownloader)
+
+    video_data, player_response, *_ = youtube._parse_video_data(video_id)
+
+    scraper_status = None
+    if not skip_status:
+        details = youtube.get_video_data(video_id)
+        status = details.get('status')
+        video_type = details.get('video_type')
+        if video_type not in {'premiere', 'video'} or (video_type == 'premiere' and details.get('continuation_info') == {}):
+            scraper_status = 'upload'
+        elif status == 'upcoming':
+            scraper_status = 'prelive'
+        elif status == 'live':
+            scraper_status = 'live'
+        elif status == 'past':
+            scraper_status = 'postlive'
+        else:
+            scraper_status = 'unknown'
+
+    return video_data, player_response, scraper_status
 
 
 def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
@@ -488,8 +590,12 @@ def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
                     raise RuntimeError('could not extract status hint')
 
             except KeyError:
-                print(f"warning: status hint extraction: unexpected KeyError... {count = } {perpage_count = } (+1) ... {valid_count = } {skipped = } {limit = } ... {seen_vids = } ... {basic_video_details = })", file=sys.stderr)
-                traceback.print_exc()
+                if video_id is not None and lives[video_id].progress not in {'unscraped', 'aborted'} and lives[video_id].status not in {'postlive', 'upload'}:
+                    print(f"warning: status hint extraction: unexpected KeyError... {count = } {perpage_count = } (+1) ... {valid_count = } {skipped = } {limit = } ... {seen_vids = } ... {basic_video_details = })", file=sys.stderr)
+                    traceback.print_exc()
+                else:
+                    # 'waiting' may be hidden on the player response page (possibly a server bug, but could also be intentional)
+                    print(f"warning: status hint extraction: unexpected KeyError, already scraped, not live... {basic_video_details = })", file=sys.stderr)
 
             except Exception:
                 print("warning: could not extract status hint", file=sys.stderr)
@@ -521,21 +627,9 @@ def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
                 skipped += 1
                 continue
 
-            print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}): " + video_id, file=sys.stdout, flush=True)
-            print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}): " + video_id, file=dlog, flush=True)
-
-            video_data, player_response, *_ = youtube._parse_video_data(video_id)
-            microformat = player_response['microformat']['playerMicroformatRenderer']
-            video_details = player_response['videoDetails']
-
-            # keep only known useful fields, junk spam/useless fields
-            old_player_response = player_response
-            player_response = {}
-            for key in ['playabilityStatus', 'videoDetails', 'microformat']:
-                player_response[key] = old_player_response[key]
-            for key in ['streamingData']:
-                player_response[key] = old_player_response.get(key)
-            del old_player_response
+            if status != 'unknown':
+                print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}): " + video_id, file=sys.stdout, flush=True)
+                print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}): " + video_id, file=dlog, flush=True)
 
             if video_id not in lives:
                 lives[video_id] = Video(video_id)
@@ -544,59 +638,15 @@ def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
 
             channel.add_video(video)
 
-            # "export" the fields manually here
-            meta = {}
-
-            meta['id'] = video_id
-            meta['channel_id'] = channel.channel_id
-            meta['title'] = basic_video_details.get('title')
-            meta['raw'] = player_response  # I think this is different from yt-dlp infodict output
-            meta['description'] = microformat['description']['simpleText']
-            meta['uploader'] = video_data['author']
-            meta['duration'] = video_data['duration']
-
-            meta['is_live'] = video_details.get('isLive') is True
-            meta['is_upcoming'] = video_details.get('isUpcoming') is True
-            meta['is_livestream'] = video_details.get('isLiveContent') is True
-
-            try:
-                meta['live_starttime'] = int(dt.datetime.fromisoformat(microformat['liveBroadcastDetails']['startTimestamp']).timestamp() + 0.1)
-            except Exception:
-                meta['live_starttime'] = None
-
-            try:
-                meta['live_endtime'] = int(dt.datetime.fromisoformat(microformat['liveBroadcastDetails']['endTimestamp']).timestamp() + 0.1)
-            except Exception:
-                meta['live_endtime'] = None
-
-            if meta['is_live']:
-                meta['live_status'] = 'is_live'
-            elif meta['is_upcoming']:
-                meta['live_status'] = 'is_upcoming'
-            elif meta['is_livestream']:
-                meta['live_status'] = 'was_live'
-            else:
-                meta['live_status'] = 'not_live'
-
-            video.set_status(status)
-            video.reset_progress()
-            video.set_progress('waiting')
-            video.meta = meta
-            video.rawmeta = meta.get('raw')
-            video.meta_timestamp = get_timestamp_now()
+            rescrape_chatdownloader(video, channel=channel, youtube=youtube)
 
             persist_meta(video, fresh=True)
-
-            try:
-                del meta['raw']
-            except KeyError:
-                pass
 
             if perpage_count >= limit:
                 print(f"perpage limit of {limit} reached:", video_status)
                 break
 
-        if count >= limit:
+        if count >= limit * 3:
             print(f"limit of {limit} reached")
             break
 
@@ -1152,12 +1202,12 @@ def process_one_status(video: Video, first=False):
     video_id = video.video_id
 
     if video.progress == 'waiting':
-        print("status: just invoked: " + video_id, file=statuslog)
         if video.meta is None:
-            print("warning: video.meta missing for video " + video_id, file=sys.stderr)
-            video.prepare_meta()
-
-        invoke_downloader(video)
+            print("error: video.meta missing for video " + video_id, file=sys.stderr)
+            # video.prepare_meta()
+        else:
+            print("status: just invoked: " + video_id, file=statuslog)
+            invoke_downloader(video)
 
     elif video.progress == 'missed':
         if first:
@@ -1277,6 +1327,7 @@ def handle_special_signal(signum, frame):
 # TODO
 if __name__ == '__main__':
     mainpid = os.getpid()
+    write_cgroup(mainpid)
     print(f"{mainpid = }")
 
     # Prep storage and persistent state directories
