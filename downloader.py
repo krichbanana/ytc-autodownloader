@@ -121,6 +121,7 @@ def run_loop(outname, video_id):
     cookies = None
     new_cookies = False
     channel_id = None
+    private = False
     # reporting only
     aborted = False
     started = False
@@ -179,11 +180,17 @@ def run_loop(outname, video_id):
                 else:
                     new_cookies = False
 
-                downloader = ChatDownloader(cookies=cookies)
-
-                youtube = downloader.create_session(YouTubeChatDownloader)
+                fd = None
+                if not started and private:
+                    # Throttle time-waiting private video tasks to avoid hammering YouTube
+                    fd = create_file_lock("private.lock")
+                    time.sleep(5)
 
                 try:
+                    downloader = ChatDownloader(cookies=cookies)
+
+                    youtube = downloader.create_session(YouTubeChatDownloader)
+
                     details = youtube.get_video_data(video_id)
                     is_live = details.get('status') in {'live', 'upcoming'}
                     if retry:
@@ -196,10 +203,16 @@ def run_loop(outname, video_id):
                     details = None
                     is_live = None
 
+                finally:
+                    if fd is not None:
+                        remove_file_lock(fd)
+
             retry = True
 
             try:
                 chat = downloader.get_chat(video_id, output=output_file, message_groups=['all'], indent=2, overwrite=False)
+
+                private = False
 
                 # chat_downloader feature check
                 try:
@@ -238,6 +251,7 @@ def run_loop(outname, video_id):
             except LoginRequired:
                 if not paranoid_retry:
                     print('(downloader) Private video detected:', video_id)
+                    private = True
 
                 else:
                     break
@@ -248,6 +262,10 @@ def run_loop(outname, video_id):
                     if not is_live:
                         # members-only stream, missed.
                         print('(downloader) Member video is not live, ignoring:', video_id)
+                        # NOTE: there's an uncommon case where chat goes member's only after a video ends.
+                        # In this case we will lose the last few messages as we weren't initially auth'd
+                        # with cookies, and the cookies won't get used if we just ended.
+                        # One solution could be to pass cookies to every vid, but that can easily be tracked.
                         missed = True
 
                         break
