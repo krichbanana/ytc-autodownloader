@@ -90,7 +90,6 @@ def write_status(final_status: str, video_id: str, init_timestamp):
 
 
 def try_for_cookies(video_id=None, channel_id=None):
-    cookie_file = None
     prefixes = ('', 'oo/', '../')
 
     candidates = []
@@ -107,7 +106,7 @@ def try_for_cookies(video_id=None, channel_id=None):
 
     for path in candidates:
         if os.path.exists(path):
-            return cookie_file
+            return path
 
     return None
 
