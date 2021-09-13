@@ -1169,7 +1169,10 @@ def _invoke_downloader_start(q, video_id, outfile):
     q.put((pid, proc.pid, video_id))
     # Close the queue to flush it and avoid blocking the python process on exit.
     time.sleep(0.1)
-    q.close()
+    try:
+        q.close()
+    except AttributeError:
+        pass  # older python versions (pre-3.9) lack close()
     # Block this fork (hopefully not the main process)
     try:
         proc.wait()
