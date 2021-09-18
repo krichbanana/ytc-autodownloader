@@ -180,7 +180,7 @@ def run_loop(outname, video_id):
                     new_cookies = False
 
                 fd = None
-                if not started and private:
+                if not started and private and not new_cookies:
                     # Throttle time-waiting private video tasks to avoid hammering YouTube
                     fd = create_file_lock("private.lock")
                     time.sleep(5)
@@ -285,6 +285,8 @@ def run_loop(outname, video_id):
                         print('(downloader) Members only video detected, try again with different cookies:', video_id)
                     else:
                         print('(downloader) Members only video detected, try again with cookies:', video_id)
+                        # Use private lock queue for member streams, since without cookies they are unlikely to (re-)start
+                        private = True
                 else:
                     print('(downloader) Members only video detected, will try again with new cookies:', video_id)
 
