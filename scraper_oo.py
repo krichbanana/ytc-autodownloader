@@ -145,8 +145,10 @@ class Video:
 
     def prepare_meta(self):
         """ Load meta from disk or fetch it from YouTube. """
+        # NOTE: Currently unused.
         if self.meta is None:
-            self.meta = rescrape(self)
+            rescrape(self)
+
             self.rawmeta = self.meta.get('raw')
             if self.rawmeta:
                 del self.meta['raw']
@@ -155,17 +157,23 @@ class Video:
 
     def rescrape_meta(self):
         """ Ignore known meta and fetch meta from YouTube. """
-        meta = rescrape(self)
-        if meta:
-            lastmeta = self.meta
-            self.meta = meta
-            self.rawmeta = self.meta.get('raw')
-            if self.rawmeta:
+        lastmeta = self.meta
+        self.meta = None
+
+        try:
+            rescrape(self)
+        except Exception:
+            self.meta = lastmeta
+
+        if self.meta:
+            rawmeta = self.meta.get('raw')
+            if rawmeta:
+                self.rawmeta = rawmeta
                 del self.meta['raw']
 
             # Avoid a case where failing meta scrapes kept flushing.
             is_simple = self.meta is not None and self.rawmeta is None
-            if not is_simple or meta != lastmeta:
+            if not is_simple or self.meta != lastmeta:
                 self.meta_timestamp = get_timestamp_now()
                 self.did_meta_flush = False
 
@@ -461,7 +469,7 @@ def update_lives_status_channellist(dlog):
 
 
 def rescrape_chatdownloader(video: Video, channel=None, youtube=None):
-    """ rescrape, but using chat_downloader """
+    """ rescrape_ytdlp, but using chat_downloader """
     video_id = video.video_id
     video_data, player_response, status = invoke_scraper_chatdownloader(video_id, youtube)
     microformat = player_response['microformat']['playerMicroformatRenderer']
@@ -479,6 +487,7 @@ def rescrape_chatdownloader(video: Video, channel=None, youtube=None):
     # "export" the fields manually here
     meta = {}
 
+    meta['_scrape_provider'] = 'chat_downloader'
     meta['id'] = video_id
     meta['referrer_channel_id'] = channel and channel.channel_id
     meta['channel_id'] = video_details['channelId']
@@ -513,9 +522,14 @@ def rescrape_chatdownloader(video: Video, channel=None, youtube=None):
 
     video.set_status(status)
     video.reset_progress()
-    video.set_progress('waiting')
     video.meta = meta
-    video.rawmeta = meta.get('raw')
+    rawmeta = meta.get('raw')
+    if not rawmeta:
+        # Note: rawmeta may be older than meta, but it's better than being lost.
+        video.set_progress('aborted')
+    else:
+        video.rawmeta = rawmeta
+        video.set_progress('waiting')
     video.meta_timestamp = get_timestamp_now()
 
     try:
@@ -525,7 +539,10 @@ def rescrape_chatdownloader(video: Video, channel=None, youtube=None):
 
 
 def invoke_scraper_chatdownloader(video_id, youtube=None, skip_status=False):
-    """ invoke_scraper, but use chat_downloader's python interface instead of forking and calling yt-dlp """
+    """ Like invoke_scraper_ytdlp, but use chat_downloader's python interface instead of forking and calling yt-dlp.
+        Try to export the status for the autoscraper as well.
+        Returns raw YouTube data and the deduced status.
+    """
     if youtube is None:
         downloader = ChatDownloader()
         youtube = downloader.create_session(YouTubeChatDownloader)
@@ -668,7 +685,7 @@ def invoke_channel_scraper(channel: Channel, community_scrape=False):
 
         for jsonres in allmeta.readlines():
             try:
-                metalist.append(export_rescrape_fields(json.loads(jsonres)))
+                metalist.append(export_scraped_fields_ytdlp(json.loads(jsonres)))
             except Exception:
                 if community_scrape:
                     print("warning: exception in channel post scrape task (corrupt meta?)", file=sys.stderr)
@@ -737,7 +754,7 @@ def process_channel_videos(channel: Channel, dlog):
                     # We may be reloading old URLs after a program restart
                     print("ytmeta cache miss for video " + video_id + " on channel " + channel_id)
                     cache_miss = True
-                    video.meta = rescrape(video)
+                    rescrape(video)
                     if video.meta is None:
                         # scrape failed
                         continue
@@ -964,8 +981,9 @@ def maybe_rescrape_initially(video: Video):
     persist_meta(video, fresh=True)
 
 
-def export_rescrape_fields(jsonres):
+def export_scraped_fields_ytdlp(jsonres):
     ytmeta = {}
+    ytmeta['_scrape_provider'] = 'yt-dlp'
     ytmeta['raw'] = jsonres
     ytmeta['id'] = jsonres['id']
     ytmeta['title'] = jsonres['title']
@@ -1036,19 +1054,21 @@ def export_rescrape_fields(jsonres):
     return ytmeta
 
 
-def rescrape(video: Video):
-    """ Invoke the scraper on a video now. """
-    jsonres = invoke_scraper(video.video_id)
+def rescrape_ytdlp(video: Video):
+    """ Invoke the scraper, yt-dlp, on a video now.
+        Sets a restructured json result as meta.
+    """
+    jsonres = invoke_scraper_ytdlp(video.video_id)
     if jsonres is None:
         # Mark as aborted here, before processing
         video.set_progress('aborted')
 
         return None
 
-    return export_rescrape_fields(jsonres)
+    video.meta = export_scraped_fields_ytdlp(jsonres)
 
 
-def invoke_scraper(video_id):
+def invoke_scraper_ytdlp(video_id):
     if video_id not in lives:
         raise ValueError('invalid video_id')
 
@@ -1325,6 +1345,11 @@ def handle_special_signal(signum, frame):
     with open("dump/staticconfig", "w") as fp:
         print("FORCE_RESCRAPE=" + str(FORCE_RESCRAPE), file=fp)
         print("DISABLE_PERSISTENCE=" + str(DISABLE_PERSISTENCE), file=fp)
+
+
+rescrape = rescrape_ytdlp
+
+invoke_scraper = invoke_scraper_ytdlp
 
 
 # TODO
