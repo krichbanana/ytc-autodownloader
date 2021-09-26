@@ -25,6 +25,19 @@ if test -f "${channelbase}.cookies"; then
     cookie_file="${channelbase}.cookies"
 fi
 
+next_scrape_file="${channelbase}.next_scrape"
+curr_time="$(date "+%s")"  # epoch time (seconds)
+if [[ -f "${next_scrape_file?}" ]]; then
+    saved_next_time="$(<"${next_scrape_file?}")"
+    if ((saved_next_time > curr_time)); then
+        # throttled
+        exit 0
+    fi
+fi
+
+next_time=$((curr_time + (60*30)))  # 30 min throttle time
+echo "$next_time" >"$next_scrape_file"
+
 # Note that premieres will only show up here.
 url="https://www.youtube.com/channel/$channelbase$suf_community"
 if ((has_cookies)); then
