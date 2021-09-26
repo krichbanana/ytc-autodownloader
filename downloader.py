@@ -23,7 +23,8 @@ from chat_downloader.utils.core import (
 
 from utils import (
     create_file_lock,
-    remove_file_lock
+    remove_file_lock,
+    extract_video_id_from_yturl
 )
 
 # testing
@@ -139,12 +140,20 @@ def run_loop(outname, video_id):
     youtube = downloader.create_session(YouTubeChatDownloader)
 
     try:
+        old_video_id = video_id
+        video_id = extract_video_id_from_yturl(video_id)
+        if old_video_id != video_id:
+            print('(downloader) warning: video_id was not a bare id.', file=sys.stderr)
         details = youtube.get_video_data(video_id)
         is_live = details.get('status') in {'live', 'upcoming'}
         channel_id = details.get('author_id')
         print('(downloader) initial:', details.get('status'), details.get('video_type'), video_id)
         print('(downloader) title:', details.get('title'))
         print('(downloader) author:', details.get('author'))
+        if details.get('title') is None:
+            print('title missing, will dump video details')
+            print('(downloader) video_id:', video_id)
+            print('(downloader)', details)
         # No continuation? Possibly members-only.
         if details.get('continuation_info') == {}:
             cookies = try_for_cookies(video_id=video_id, channel_id=channel_id)
