@@ -7,6 +7,7 @@ import time
 
 def extract_video_id_from_yturl(href):
     """ Extract a Youtube video id from a given URL
+        Accepts video ids.
         Returns None on error or failure.
     """
     video_id = None
@@ -19,7 +20,11 @@ def extract_video_id_from_yturl(href):
             start = href.find('be/') + 3
 
         if start == -1:
-            return None
+            if len(href) == 11:
+                # Assume it's just the video id
+                start = 0
+            else:
+                return None
 
         video_id = href[start:start + 11]
 
@@ -90,12 +95,24 @@ def _locktaskshort(file):
     remove_file_lock(fd)
 
 
+def check_pid(pid):
+    """ Check For the existence of a unix pid. """
+    try:
+        os.kill(int(pid), 0)
+    except OSError:
+        return False
+    else:
+        return True
+
+
 if __name__ == '__main__':
     assert extract_video_id_from_yturl("https://www.youtube.com/watch?v=z80mWoPiZUc") == "z80mWoPiZUc"
     assert extract_video_id_from_yturl("https://www.youtube.com/watch?v=z80mWoPiZUc?t=1s") == "z80mWoPiZUc"
     assert extract_video_id_from_yturl("https://www.youtube.com/watch?t=1s&v=z80mWoPiZUc&feature=youtu.be") == "z80mWoPiZUc"
     assert extract_video_id_from_yturl("https://youtu.be/z80mWoPiZUc") == "z80mWoPiZUc"
     assert extract_video_id_from_yturl("https://youtu.be/z80mWoPiZUc?t=1s") == "z80mWoPiZUc"
+    assert extract_video_id_from_yturl("z80mWoPiZUc") == "z80mWoPiZUc"
     _test_file_lock()
+    assert check_pid(os.getpid())
     if __debug__:
         print("tests passed")
