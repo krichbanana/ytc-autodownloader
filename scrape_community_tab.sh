@@ -5,6 +5,11 @@ if [[ "$channelbase" =~ $channelregex ]]; then
     channelbase="${BASH_REMATCH[1]}"
 fi
 
+if [[ -z "$channelbase" ]]; then
+    echo '(channel tab scraper) channel id is empty' >&2
+    exit 1
+fi
+
 suf_community="/community"
 
 tmppre="tmp.${channelbase?}"
@@ -12,6 +17,9 @@ rm "${tmppre}.url" 2>/dev/null
 
 readonly ytdlp_cmd="../yt-dlp/yt-dlp.sh"
 
+if [[ ! -f "${channelbase}.cookies" ]] && [[ -f "${channelbase}.txt" ]]; then
+    cp ${channelbase}.{txt,cookies} -av
+fi
 if test -f "${channelbase}.cookies"; then
     has_cookies=1
     cookie_file="${channelbase}.cookies"
