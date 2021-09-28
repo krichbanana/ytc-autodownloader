@@ -759,9 +759,26 @@ def persist_meta(video: Video, fresh=False, clobber=True, clobber_pid=None):
                     fp.write(json.dumps(ytmeta, indent=1).encode())
 
             if clobber or not os.path.exists(metafileyt_status):
-                print('Updating ' + metafileyt_status)
-                with open(metafileyt_status, 'wb') as fp:
-                    fp.write(json.dumps(ytmeta, indent=1).encode())
+                try:
+                    bugtest1 = metafileyt + "." + 'prelive'
+                    bugtest2 = metafileyt + "." + 'live'
+                    bugtest3 = metafileyt + "." + 'postlive'
+                    if os.path.exists(bugtest3) and metafileyt_status != bugtest3:
+                        print('warning: redundant meta status write:', metafileyt_status, file=sys.stderr)
+                    # I'll figure out how to do this with warnings eventually... maybe.
+                    # Hunt down a likely bug.
+                    if os.path.exists(bugtest3) and metafileyt_status == bugtest2:
+                        raise RuntimeError(f'illegal meta write (bug): {metafileyt_status} written after {bugtest3})')
+                    if os.path.exists(bugtest3) and metafileyt_status == bugtest1:
+                        raise RuntimeError(f'illegal meta write (bug): {metafileyt_status} written after {bugtest3})')
+                    if os.path.exists(bugtest2) and metafileyt_status == bugtest1:
+                        raise RuntimeError(f'illegal meta write (bug): {metafileyt_status} written after {bugtest2})')
+
+                    print('Updating ' + metafileyt_status)
+                    with open(metafileyt_status, 'wb') as fp:
+                        fp.write(json.dumps(ytmeta, indent=1).encode())
+                except RuntimeError:
+                    traceback.print_exc()
         finally:
             try:
                 # Since we don't deep-copy, don't keep 'raw' in the meta dict.
