@@ -283,7 +283,8 @@ class Channel:
 # is_upcoming:
 
 
-def update_lives():
+def get_hololivetv_html():
+    """ Get the latest html page of the older site's schedule """
     subprocess.run(holoscrapecmd, shell=True)
 
     html_doc = ''
@@ -319,116 +320,34 @@ def update_lives_status():
 
 
 def update_lives_status_holoschedule(dlog):
-    # Find all sections indicated by a 'day' header
-    soup = update_lives()
-    allcont = soup.find(id='all')
-    allcontchildren = [node for node in allcont.children if len(repr(node)) > 4]
-
-    localdate = ''
+    # Find all valid hyperlinks to youtube videos
+    soup = get_hololivetv_html()
     newlives = 0
     knownlives = 0
 
-    error = False
+    for link in soup.find_all('a'):
+        # Extract any link
+        href = link.get('href')
+        video_id = extract_video_id_from_yturl(href, strict=True)
 
-    try:
-        for child in allcontchildren:
-            day = child.find(class_='navbar-text')
+        if video_id is None:
+            continue
 
-            if day:
-                localdate = [x for x in day.stripped_strings][0].split()[0]
+        if video_id not in lives:
+            recall_video(video_id, filter_progress=True)
+            video = lives[video_id]
 
-            # Extract MM/DD date from header
-            for link in child.find_all('a'):
-                # Process Youtube link; get HH:MM starttime and user-friendly channel name (not localized) if possible
-                items = None
-                localtime = ''
-                channelowner = ''
-                video_id = None
-                malformed = False
+        if video_id not in lives:
+            video = Video(video_id)
+            lives[video_id] = video
+            print("discovery: new live listed:", video_id, file=dlog, flush=True)
+            newlives += 1
+        else:
+            # known (not new) live listed
+            knownlives += 1
 
-                # Extract link
-                href = link.get('href')
-
-                video_id = extract_video_id_from_yturl(href)
-
-                if video_id is None:
-                    error = True
-
-                    continue
-
-                # Check for existing state
-                if video_id not in lives:
-                    recall_video(video_id, filter_progress=True)
-                    video = lives[video_id]
-
-                if video_id not in lives:
-                    video = Video(video_id)
-                    lives[video_id] = video
-
-                    try:
-                        items = [x for x in link.stripped_strings]
-                        localtime = items[0]
-                        channelowner = items[1]
-                    except Exception:
-                        malformed = True
-
-                    if not malformed:
-                        print("discovery: new live listed: " + video_id + " " + localdate + " " + localtime + " : " + channelowner, file=dlog, flush=True)
-                    else:
-                        print("discovery: new live listed (malformed page): " + video_id, file=dlog, flush=True)
-
-                    newlives += 1
-                else:
-                    # known (not new) live listed
-                    knownlives += 1
-
-    except Exception:
-        error = True
-        traceback.print_exc()
-
-    if newlives + knownlives == 0 or error:
-        print("warning: unexpected error when processing holoschedule page (found " + str(newlives + knownlives) + " total lives), using fallback", file=sys.stderr)
-        saved_newlives = newlives
-        newlives = 0
-        knownlives = 0
-        error = False
-
-        for link in soup.find_all('a'):
-            # Extract any link
-            href = link.get('href')
-            video_id = None
-
-            video_id = extract_video_id_from_yturl(href)
-
-            if video_id is None:
-                error = True
-
-                continue
-
-            if not malformed:
-                if video_id not in lives:
-                    recall_video(video_id, filter_progress=True)
-                    video = lives[video_id]
-
-                if video_id not in lives:
-                    video = Video(video_id)
-                    lives[video_id] = video
-                    print("discovery: new live listed (fallback extraction): " + video_id, file=dlog, flush=True)
-                    newlives += 1
-                else:
-                    # known (not new) live listed
-                    knownlives += 1
-
-        print("discovery: holoschedule: (fallback) new lives: " + str(newlives))
-        print("discovery: holoschedule: (fallback) new lives (initial try): " + str(saved_newlives))
-        print("discovery: holoschedule: (fallback) known lives: " + str(knownlives))
-
-        if error:
-            print("note: video id extraction errors occured when processing holoschedule page using fallback method (found " + str(newlives + knownlives) + " total lives)", file=sys.stderr)
-
-    else:
-        print("discovery: holoschedule: new lives: " + str(newlives))
-        print("discovery: holoschedule: known lives: " + str(knownlives))
+    print("discovery: holoschedule: new lives:", str(newlives))
+    print("discovery: holoschedule: known lives:", str(knownlives))
 
 
 def update_lives_status_urllist(dlog):
