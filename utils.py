@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 
+import datetime as dt
 import os
+import sys
 import multiprocessing as mp
 import time
+import json
 
 
-def extract_video_id_from_yturl(href):
+def extract_video_id_from_yturl(href, strict=False):
     """ Extract a Youtube video id from a given URL
-        Accepts video ids.
+        Accepts video ids, unless strict=True.
         Returns None on error or failure.
     """
     video_id = None
@@ -20,7 +23,7 @@ def extract_video_id_from_yturl(href):
             start = href.find('be/') + 3
 
         if start == -1:
-            if len(href) == 11:
+            if len(href) == 11 and not strict:
                 # Assume it's just the video id
                 start = 0
             else:
@@ -105,6 +108,79 @@ def check_pid(pid):
         return True
 
 
+def get_timestamp_now():
+    return dt.datetime.utcnow().timestamp()
+
+
+def meta_load_fast(video_id):
+    id_prefix = "by-video_id/" + str(video_id)
+    if os.path.exists(id_prefix):
+        meta = json.load(open(id_prefix + ".meta"))
+
+        if 'ytmeta' not in meta:
+            print('(utils.py) warning: could not find \'ytmeta\' key in meta', file=sys.stderr)
+
+    else:
+        print('(utils.py) could not find meta file', file=sys.stderr)
+
+
+def get_start_timestamp(video_id):
+    try:
+        meta = meta_load_fast(video_id)
+        timestamp = meta_extract_start_timestamp(meta)
+
+        if timestamp is None:
+            print('(utils.py) could not find start timestamp', file=sys.stderr)
+
+        return timestamp
+
+    except Exception:
+        print('(utils.py) get_start_timestamp() failed', file=sys.stderr)
+
+        return None
+
+
+def meta_extract_start_timestamp(meta):
+    try:
+        return meta['ytmeta']['live_starttime']
+
+    except Exception:
+        return None
+
+
+def meta_extract_end_timestamp(meta):
+    try:
+        return meta['ytmeta']['live_endtime']
+
+    except Exception:
+        return None
+
+
+def meta_extract_raw_live_status(meta):
+    try:
+        return meta['ytmeta']['live_status']
+
+    except Exception:
+        return None
+
+
+def meta_extract_duration(meta):
+    try:
+        return meta['ytmeta']['duration']
+
+    except Exception:
+        return None
+
+
+def meta_extract_raw_live_latency_class(meta):
+    """ Only provided by the chat_downloader scrape source """
+    try:
+        return meta['ytmeta']['raw']['videoDetails']['latencyClass']
+
+    except Exception:
+        return None
+
+
 if __name__ == '__main__':
     assert extract_video_id_from_yturl("https://www.youtube.com/watch?v=z80mWoPiZUc") == "z80mWoPiZUc"
     assert extract_video_id_from_yturl("https://www.youtube.com/watch?v=z80mWoPiZUc?t=1s") == "z80mWoPiZUc"
@@ -112,6 +188,7 @@ if __name__ == '__main__':
     assert extract_video_id_from_yturl("https://youtu.be/z80mWoPiZUc") == "z80mWoPiZUc"
     assert extract_video_id_from_yturl("https://youtu.be/z80mWoPiZUc?t=1s") == "z80mWoPiZUc"
     assert extract_video_id_from_yturl("z80mWoPiZUc") == "z80mWoPiZUc"
+    assert get_timestamp_now() is not None
     _test_file_lock()
     assert check_pid(os.getpid())
     if __debug__:

@@ -12,7 +12,14 @@ import signal
 from chat_downloader import ChatDownloader
 from chat_downloader.sites import YouTubeChatDownloader
 
-from utils import extract_video_id_from_yturl
+from utils import (
+    check_pid,
+    extract_video_id_from_yturl,
+    meta_load_fast,
+    meta_extract_start_timestamp,
+    meta_extract_raw_live_status
+)
+
 try:
     from write_cgroup import write_cgroup
 except ImportError:
@@ -37,6 +44,7 @@ holoscrapecmd = 'wget -nv --load-cookies=../cookies-schedule-hololive-tv.txt htt
 # dict: video_id => Video
 lives = {}
 channels = {}
+events = {}
 pids = {}
 general_stats = {}  # for debugging
 
@@ -1108,6 +1116,96 @@ def safen_path(s):
         return ""
 
 
+def schedule_periodic_rescrape(video_id):
+    handler_id = 'periodic_rescrape'
+    try:
+        if video_id not in lives:
+            print('warning: failed to schedule rescrape: video_id not found:', video_id)
+            return
+
+        def time_func():
+            video = lives[video_id]
+            meta = meta_load_fast(video_id)
+            nowtime = get_timestamp_now()
+
+            starttime = None
+            try:
+                starttime = meta_extract_start_timestamp(meta)
+            except Exception:
+                pass
+
+            if starttime is None or starttime - nowtime < 300:
+                # Rescrape next time we check handlers, at least 60 seconds later
+                video.next_event_check = nowtime + 60
+            else:
+                # If more than two hours out, split time in half. Else, do 15min intervals.
+                next_check = (starttime - nowtime) / 2 + starttime
+                if starttime - next_check < 60 * 60 * 2:
+                    next_check = nowtime + 60 * 15
+                video.next_event_check = next_check
+
+        def keep_func():
+            meta = meta_load_fast(video_id)
+            raw_status = meta_extract_raw_live_status(meta)
+            # Will remove the handler when the video becomes live; we might change this behavior
+            if raw_status == 'is_upcoming':
+                return True
+
+            if raw_status == 'is_live':
+                return False
+
+            return False
+
+        handlers = events.get(video_id)
+        handler = {'handler_id': handler_id, 'time_func': time_func, 'keep_func': keep_func}
+        if handlers is not None:
+            reinstall = False
+            for i in range(len(handlers)):
+                h = handlers[i]
+                if h['handler_id'] == handler_id:
+                    print('warning: reinstalling existing with new handler:', handler_id, file=sys.stderr)
+                    handlers[i] = handler
+                    reinstall = True
+                    break
+
+            if not reinstall:
+                handlers.append(handler)
+                lives[video_id].next_event_check = get_timestamp_now()
+
+    except Exception:
+        print('warning: failed to schedule rescrape', file=sys.stderr)
+
+
+def run_periodic_rescrape_handler(video_id):
+    handler_id = 'periodic_rescrape'
+    time_now = get_timestamp_now()
+    video = lives[video_id]
+    if video.next_event_check > time_now:
+        return
+
+    handler = None
+    index = -1
+    for i in range(len(events[video_id])):
+        h = events[video_id][i]
+        if h['handler_id'] == handler_id:
+            handler = h
+            index = i
+            break
+
+    time_func, keep_func = handler['time_func'], handler['keep_func']
+    next_check = time_func()
+
+    # scrape here
+    rescrape_chatdownloader(video)
+    persist_meta(video, fresh=True, clobber=True)
+
+    video.next_event_check = next_check
+    if not keep_func():
+        del events[video_id][index]
+        del video.next_event_check
+        return
+
+
 q = mp.SimpleQueue()
 
 
@@ -1162,16 +1260,6 @@ def invoke_downloader(video: Video):
     except Exception:
         print("warning: downloader invocation failed because of an exception. printing traceback...", file=sys.stderr)
         traceback.print_exc()
-
-
-def check_pid(pid):
-    """ Check For the existence of a unix pid. """
-    try:
-        os.kill(int(pid), 0)
-    except OSError:
-        return False
-    else:
-        return True
 
 
 def start_watchdog():
@@ -1300,7 +1388,15 @@ def process_one_status(video: Video, first=False):
 
             if details and details.get('status') in {'live', 'upcoming'}:
                 print("warning: downloader seems to have exited prematurely. reinvoking:", video_id, file=sys.stderr)
+
+                try:
+                    # assume process is dead so that we can track the new one without issue
+                    del pids[video_id]
+                except KeyError:
+                    pass
+
                 invoke_downloader(video)
+
             else:
                 video.set_progress('downloaded')
 
