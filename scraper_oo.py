@@ -715,7 +715,7 @@ def process_channel_videos(channel: Channel, dlog):
     channel.clear_batch()
 
 
-def persist_meta(video: Video, fresh=False, clobber=True):
+def persist_meta(video: Video, fresh=False, clobber=True, clobber_pid=None):
     video_id = video.video_id
 
     metafile = 'by-video-id/' + video_id
@@ -727,6 +727,9 @@ def persist_meta(video: Video, fresh=False, clobber=True):
 
     if clobber or not os.path.exists(metafile):
         print('Updating ' + metafile)
+
+    if clobber_pid is None:
+        clobber_pid = clobber
 
     pidfile = 'pid/' + video_id
     meta = {}
@@ -771,7 +774,7 @@ def persist_meta(video: Video, fresh=False, clobber=True):
         with open(metafile, 'wb') as fp:
             fp.write(json.dumps(meta, indent=1).encode())
 
-    if clobber or not os.path.exists(pidfile):
+    if clobber_pid or not os.path.exists(pidfile):
         with open(pidfile, 'wb') as fp:
             if pids.get(video_id) is not None:
                 # Write dlpid to file
@@ -1143,7 +1146,7 @@ def process_dlpid_queue():
                 lives[vid].set_progress('downloading')
 
         pids[vid] = (pid, dlpid)
-        persist_meta(lives[vid])
+        persist_meta(lives[vid], clobber=False, clobber_pid=True)
 
 
 def invoke_downloader(video: Video):
