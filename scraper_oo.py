@@ -154,6 +154,10 @@ class Video:
         self.transition_timestamp = get_timestamp_now()
         self.progress = progress
 
+        if progress in {'unscraped', 'waiting', 'downloading'}:
+            print(f"warning: overriding new progress state due to postlive status {progress}", file=sys.stderr)
+            self.progress = 'missed'
+
     def reset_status(self):
         """ Set the status to 'unknown'. Useful for clearing state loaded from disk. """
         self.status = 'unknown'
@@ -1232,6 +1236,12 @@ def invoke_downloader(video: Video):
 
         if pids.get(video_id):
             print("warning: duplicate invocation for video " + video_id + " (according to internal PID state)", file=sys.stderr)
+
+        if video.status not in {'prelive', 'live'}:
+            print("warning: cancelling invocation for video " + video_id + f" (cannot invoke for status {video.status})", file=sys.stderr)
+            # HACK to stop the spam
+            video.progress = 'missed'
+            return
 
         nowtime = dt.datetime.utcnow()
         outfile = "_" + video_id + "_curr-" + str(nowtime.timestamp())
