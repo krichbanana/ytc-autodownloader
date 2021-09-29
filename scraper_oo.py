@@ -61,6 +61,17 @@ class TransitionException(Exception):
     pass
 
 
+def get_or_init_video(video_id):
+    video = None
+    if video_id not in lives:
+        video = Video(video_id)
+        lives[video_id] = video
+    else:
+        video = lives[video_id]
+
+    return video
+
+
 class Video:
     """ Record the online status of a video, along with the scraper's download stage.
         Metadata from Youtube is also stored when needed.
@@ -335,11 +346,9 @@ def update_lives_status_holoschedule(dlog):
 
         if video_id not in lives:
             recall_video(video_id, filter_progress=True)
-            video = lives[video_id]
 
-        if video_id not in lives:
-            video = Video(video_id)
-            lives[video_id] = video
+        video = get_or_init_video(video_id)
+        if video.status == 'unscraped':
             print("discovery: new live listed:", video_id, file=dlog, flush=True)
             newlives += 1
         else:
@@ -575,10 +584,7 @@ def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
                 print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}): " + video_id, file=sys.stdout, flush=True)
                 print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}): " + video_id, file=dlog, flush=True)
 
-            if video_id not in lives:
-                lives[video_id] = Video(video_id)
-
-            video = lives[video_id]
+            video = get_or_init_video(video_id)
 
             channel.add_video(video)
 
@@ -839,8 +845,8 @@ def recall_video(video_id: str, filter_progress=False):
                 except (json.decoder.JSONDecodeError, KeyError):
                     valid_ytmeta = False
 
-    video = Video(video_id)
-    lives[video_id] = video
+    # This has to be conditional, unless we want old references to be silently not updated and have tons of debugging follow.
+    video = get_or_init_video(video_id)
 
     if valid_meta:
         # Commit status to runtime tracking (else we would discard it here)
@@ -897,12 +903,46 @@ def process_ytmeta(video: Video):
         video.set_progress('invalid')
 
 
+def check_periodic_event(video: Video):
+    try:
+        if video.status == 'prelive':
+            if (id(lives[video.video_id]) != id(video)):
+                # The foreach loop in main creates the name video_id that is
+                # not deleted after the loop, which for some incredibly unknown
+                # reason (implicit nonlocal scope/namespace lookup???) defines
+                # the name for functions that are called after the loop.
+                print("what the fuck.")
+                print("lives.....")
+                print(lives)
+                sys.exit(1)
+            if video.video_id in events:
+                try:
+                    # Don't immediately rescrape if we literally just scraped meta.
+                    # This may still set the check time to a past timestamp if we hadn't just scraped.
+                    next_check = max((video.meta_timestamp + 60 * 5), video.next_event_check)
+                    video.next_event_check = next_check
+                except Exception:
+                    print('warning: periodic rescrape rescheduling failed')
+            else:
+                schedule_periodic_rescrape(video.video_id)
+
+            if video.video_id not in events or len(events[video.video_id]) == 0:
+                print('warning: scheduling apparently failed:', video.video_id, file=sys.stderr)
+
+            # If the event check time is in the past, the handler will run.
+            run_periodic_rescrape_handler(video.video_id)
+
+    except Exception:
+        print('warning: running periodic rescrape event failed:', video.video_id, file=sys.stderr)
+        traceback.print_exc()
+
+
 def maybe_rescrape(video: Video):
     saved_progress = video.progress
     if video.progress == 'unscraped':
         video.rescrape_meta()
         if video.meta is None:
-            # scrape failed
+            # all scrapes failed?
             return
 
         process_ytmeta(video)
@@ -910,6 +950,8 @@ def maybe_rescrape(video: Video):
         # Avoid redundant disk flushes (as long as we presume that the title/description/listing status won't change)
         if saved_progress not in {'missed', 'invalid'} and saved_progress != video.progress:
             persist_meta(video, fresh=True)
+
+    check_periodic_event(video)
 
 
 def maybe_rescrape_initially(video: Video):
@@ -919,13 +961,15 @@ def maybe_rescrape_initially(video: Video):
     if video.progress == 'unscraped' or FORCE_RESCRAPE:
         video.rescrape_meta()
         if video.meta is None:
-            # scrape failed
+            # initial scrape failed
             return
 
         process_ytmeta(video)
 
     # Redundant, but purges corruption
     persist_meta(video, fresh=True)
+
+    check_periodic_event(video)
 
 
 def export_scraped_fields_ytdlp(jsonres):
@@ -1063,8 +1107,11 @@ def schedule_periodic_rescrape(video_id):
             return
 
         def time_func():
+            print('running time func', video_id)
             video = lives[video_id]
             meta = meta_load_fast(video_id)
+            if meta is None:
+                print('warning: keep func: fast meta load failed:', video_id)
             nowtime = get_timestamp_now()
 
             starttime = None
@@ -1084,19 +1131,25 @@ def schedule_periodic_rescrape(video_id):
                 video.next_event_check = next_check
 
         def keep_func():
+            print('running keep func', video_id)
             meta = meta_load_fast(video_id)
+            if meta is None:
+                print('warning: keep func: fast meta load failed:', video_id)
             raw_status = meta_extract_raw_live_status(meta)
             # Will remove the handler when the video becomes live; we might change this behavior
             if raw_status == 'is_upcoming':
                 return True
 
             if raw_status == 'is_live':
+                print('not keeping anymore (now live)')
                 return False
 
+            print('not keeping anymore (not upcoming or is unscrapeable)')
             return False
 
-        handlers = events.get(video_id)
         handler = {'handler_id': handler_id, 'time_func': time_func, 'keep_func': keep_func}
+
+        handlers = events.get(video_id)
         if handlers is not None:
             reinstall = False
             for i in range(len(handlers)):
@@ -1109,7 +1162,12 @@ def schedule_periodic_rescrape(video_id):
 
             if not reinstall:
                 handlers.append(handler)
-                lives[video_id].next_event_check = get_timestamp_now()
+
+            lives[video_id].next_event_check = get_timestamp_now()
+
+        else:
+            events[video_id] = [handler]
+            lives[video_id].next_event_check = get_timestamp_now()
 
     except Exception:
         print('warning: failed to schedule rescrape', file=sys.stderr)
@@ -1425,6 +1483,9 @@ if __name__ == '__main__':
                 if progress == 'unscraped':
                     # Try to load missing meta from disk
                     recall_video(video_id)
+
+            # There is a 4-hour explanation for this line, take a guess what happened.
+            del video_id, video
 
             # Try to make sure downloaders are tracked with correct state
             process_dlpid_queue()

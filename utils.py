@@ -113,15 +113,17 @@ def get_timestamp_now():
 
 
 def meta_load_fast(video_id):
-    id_prefix = "by-video_id/" + str(video_id)
+    id_prefix = "by-video-id/" + str(video_id)
     if os.path.exists(id_prefix):
         meta = json.load(open(id_prefix + ".meta"))
 
         if 'ytmeta' not in meta:
             print('(utils.py) warning: could not find \'ytmeta\' key in meta', file=sys.stderr)
 
+        return meta
+
     else:
-        print('(utils.py) could not find meta file', file=sys.stderr)
+        print('(utils.py) could not find status file:', id_prefix, file=sys.stderr)
 
 
 def get_start_timestamp(video_id):
