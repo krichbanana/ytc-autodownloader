@@ -29,6 +29,7 @@ except ImportError:
 
 # Debug switch
 DISABLE_PERSISTENCE = False
+PERIODIC_SCRAPES = False
 FORCE_RESCRAPE = False
 SCRAPER_SLEEP_INTERVAL = 120 * 5 / 2
 CHANNEL_SCRAPE_LIMIT = 30
@@ -955,7 +956,8 @@ def maybe_rescrape(video: Video):
         if saved_progress not in {'missed', 'invalid'} and saved_progress != video.progress:
             persist_meta(video, fresh=True)
 
-    check_periodic_event(video)
+    if PERIODIC_SCRAPES:
+        check_periodic_event(video)
 
 
 def maybe_rescrape_initially(video: Video):
@@ -973,7 +975,8 @@ def maybe_rescrape_initially(video: Video):
     # Redundant, but purges corruption
     persist_meta(video, fresh=True)
 
-    check_periodic_event(video)
+    if PERIODIC_SCRAPES:
+        check_periodic_event(video)
 
 
 def export_scraped_fields_ytdlp(jsonres):
@@ -1434,10 +1437,16 @@ def process_one_status(video: Video, first=False):
 def handle_special_signal(signum, frame):
     os.makedirs('dump', exist_ok=True)
 
-    with open("dump/lives", "w") as fp:
-        for video in lives.values():
-            # Fine as long as no objects in the class.
-            fp.write(json.dumps(video.__dict__, sort_keys=True))
+    try:
+        with open("dump/lives", "w") as fp:
+            for video in lives.values():
+                # Fine as long as no objects in the class.
+                fp.write(json.dumps(video.__dict__, sort_keys=True))
+    except Exception:
+        print('dumping lives failed.')
+        traceback.print_exc()
+    else:
+        print('dumping lives succeeded.')
 
     with open("dump/pids", "w") as fp:
         fp.write(json.dumps(pids))
@@ -1448,6 +1457,9 @@ def handle_special_signal(signum, frame):
     with open("dump/staticconfig", "w") as fp:
         print("FORCE_RESCRAPE=" + str(FORCE_RESCRAPE), file=fp)
         print("DISABLE_PERSISTENCE=" + str(DISABLE_PERSISTENCE), file=fp)
+        print("PERIODIC_SCRAPES=" + str(PERIODIC_SCRAPES), file=fp)
+        print("SCRAPER_SLEEP_INTERVAL=" + str(SCRAPER_SLEEP_INTERVAL), file=fp)
+        print("CHANNEL_SCRAPE_LIMIT=" + str(CHANNEL_SCRAPE_LIMIT), file=fp)
 
 
 rescrape = rescrape_ytdlp
