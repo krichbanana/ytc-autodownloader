@@ -49,7 +49,7 @@ events = {}
 pids = {}
 general_stats = {}  # for debugging
 
-statuses = {'unknown', 'prelive', 'live', 'postlive', 'upload'}
+statuses = {'unknown', 'prelive', 'live', 'postlive', 'upload', 'error'}
 progress_statuses = {'unscraped', 'waiting', 'downloading', 'downloaded', 'missed', 'invalid', 'aborted'}
 
 
@@ -94,6 +94,7 @@ class Video:
         self.did_progress_print = False
         self.did_discovery_print = False
         self.did_meta_flush = False
+        self.meta_flush_reason = 'new video object'
 
     def set_status(self, status: str):
         """ Set the online status (live progress) of a video
@@ -121,6 +122,8 @@ class Video:
             self.warned = True
         else:
             self.did_status_print = False
+            if self.did_meta_flush:
+                self.meta_flush_reason = f'status changed: {self.status} -> {status}'
             self.did_meta_flush = False
 
         self.transition_timestamp = get_timestamp_now()
@@ -150,13 +153,15 @@ class Video:
             self.warned = True
         else:
             self.did_progress_print = False
+            if self.did_meta_flush:
+                self.meta_flush_reason = f'progress changed: {self.progress} -> {progress}'
             self.did_meta_flush = False
 
         self.transition_timestamp = get_timestamp_now()
         self.progress = progress
 
-        if progress in {'unscraped', 'waiting', 'downloading'}:
-            print(f"warning: overriding new progress state due to postlive status {progress}", file=sys.stderr)
+        if progress in {'unscraped', 'waiting', 'downloading'} and self.status == 'postlive':
+            print(f"warning: overriding new progress state due to postlive status: {progress} -> missed", file=sys.stderr)
             self.progress = 'missed'
 
     def reset_status(self):
@@ -200,6 +205,7 @@ class Video:
             if not is_simple or self.meta != lastmeta:
                 self.meta_timestamp = get_timestamp_now()
                 self.did_meta_flush = False
+                self.meta_flush_reason = 'failing meta scrape workaround'
 
 
 class Channel:
@@ -353,7 +359,7 @@ def update_lives_status_holoschedule(dlog):
             recall_video(video_id, filter_progress=True)
 
         video = get_or_init_video(video_id)
-        if video.status == 'unscraped':
+        if video.progress == 'unscraped':
             print("discovery: new live listed:", video_id, file=dlog, flush=True)
             newlives += 1
         else:
@@ -463,6 +469,19 @@ def rescrape_chatdownloader(video: Video, channel=None, youtube=None):
 
     video.set_status(status)
     video.reset_progress()
+
+    video.did_meta_flush = False
+    word = None
+    if video.meta is None:
+        word = 'new'
+    else:
+        word = 'updated'
+    if channel is None:
+        video.meta_flush_reason = f'{word} meta (chat_downloader source, unspecified task origin)'
+    else:
+        video.meta_flush_reason = f'{word} meta (chat_downloader source, channel task origin)'
+    del word
+
     video.meta = meta
     rawmeta = meta.get('raw')
     if not rawmeta:
@@ -504,7 +523,7 @@ def invoke_scraper_chatdownloader(video_id, youtube=None, skip_status=False):
         elif status == 'past':
             scraper_status = 'postlive'
         else:
-            scraper_status = 'unknown'
+            scraper_status = 'error'
 
     return video_data, player_response, scraper_status
 
@@ -639,6 +658,7 @@ def invoke_channel_scraper(channel: Channel, community_scrape=False):
                 video.meta = ytmeta
                 video.rawmeta = ytmeta.get('raw')
                 video.did_meta_flush = False
+                video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin)'
             else:
                 if community_scrape:
                     print("ignoring ytmeta from channel post scrape")
@@ -698,6 +718,7 @@ def process_channel_videos(channel: Channel, dlog):
                         continue
                     video.rawmeta = video.meta.get('raw')
                     video.did_meta_flush = False
+                    video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin, after cache miss)'
 
                 process_ytmeta(video)
 
@@ -808,7 +829,9 @@ def persist_meta(video: Video, fresh=False, clobber=True, clobber_pid=None):
                 # Write dlpid to file
                 fp.write(str(pids[video_id][1]).encode())
 
+    print("  meta flush reason:", video.meta_flush_reason)
     video.did_meta_flush = True
+    video.meta_flush_reason = 'no reason set'
 
 
 # TODO: replace recall_meta with recall_video
@@ -838,7 +861,8 @@ def recall_video(video_id: str, filter_progress=False):
 
         # Reduce memory usage by not loading ytmeta for undownloadable videos
         if filter_progress:
-            should_ignore = meta['progress'] in {'downloaded', 'missed', 'invalid', 'aborted'}
+            should_ignore = meta['status'] in {'postlive', 'upload'} and meta['progress'] != 'unknown'
+            should_ignore = should_ignore or meta['progress'] in {'downloaded', 'missed', 'invalid', 'aborted'}
 
         # note: FORCE_RESCRAPE might clobber old ytmeta if not loaded (bad if the video drastically changes or goes unavailable)
         if valid_ytmeta and not should_ignore:
@@ -961,7 +985,12 @@ def maybe_rescrape(video: Video):
 
 
 def maybe_rescrape_initially(video: Video):
-    if video.progress == 'downloading':
+    if video.progress in {'waiting', 'downloading'}:
+        # Recover from crash or interruption
+        video.reset_progress()
+
+    if video.progress in {'missed', 'aborted'} and video.status in {'unknown', 'prelive'}:
+        # Recover from potential corruption or bug
         video.reset_progress()
 
     if video.progress == 'unscraped' or FORCE_RESCRAPE:
@@ -1063,7 +1092,14 @@ def rescrape_ytdlp(video: Video):
 
         return None
 
-    video.meta = export_scraped_fields_ytdlp(jsonres)
+    meta = export_scraped_fields_ytdlp(jsonres)
+    video.did_meta_flush = False
+    if video.meta is None:
+        video.meta_flush_reason = 'new meta (yt-dlp source, unspecified task origin)'
+    else:
+        video.meta_flush_reason = 'updated meta (yt-dlp source, unspecified task origin)'
+
+    video.meta = meta
 
 
 def invoke_scraper_ytdlp(video_id):
@@ -1488,11 +1524,12 @@ if __name__ == '__main__':
     # Initial load
     print("Starting initial pass", flush=True)
 
+    nowtimestamp = str(get_timestamp_now())
     with open("discovery.txt", "a") as dlog:
-        print("program started", file=dlog, flush=True)
+        print("program started: " + nowtimestamp, file=dlog, flush=True)
         dlog.flush()
     statuslog = open("status.txt", "a")
-    print("program started", file=statuslog)
+    print("program started: " + nowtimestamp, file=statuslog)
     statuslog.flush()
     os.fsync(statuslog.fileno())
 
