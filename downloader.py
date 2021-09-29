@@ -283,6 +283,8 @@ def run_loop(outname, video_id):
                 if next_cookies is not None:
                     if cookies is None:
                         print('(downloader) found new cookies:', video_id)
+                        cookies = next_cookies
+                        new_cookies = True
                     else:
                         if cookies != next_cookies:
                             print('(downloader) found new cookies, different from current cookies:', video_id)
