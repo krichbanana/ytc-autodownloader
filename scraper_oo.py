@@ -205,7 +205,7 @@ class Video:
             if not is_simple or self.meta != lastmeta:
                 self.meta_timestamp = get_timestamp_now()
                 self.did_meta_flush = False
-                self.meta_flush_reason = 'failing meta scrape workaround'
+                self.meta_flush_reason = 'new meta after rescrape requested'
 
 
 class Channel:
@@ -987,10 +987,12 @@ def maybe_rescrape(video: Video):
 def maybe_rescrape_initially(video: Video):
     if video.progress in {'waiting', 'downloading'}:
         # Recover from crash or interruption
+        print(f"(initial check) video {video.video_id}: resetting progress after possible crash: {video.progress} -> unscraped")
         video.reset_progress()
 
     if video.progress in {'missed', 'aborted'} and video.status in {'unknown', 'prelive'}:
         # Recover from potential corruption or bug
+        print(f"(initial check) video {video.video_id}: resetting progress after possible bug: {video.progress} -> unscraped. found status: {video.status}")
         video.reset_progress()
 
     if video.progress == 'unscraped' or FORCE_RESCRAPE:
