@@ -375,40 +375,50 @@ def update_lives_status_urllist(dlog):
     pass
 
 
+def scrape_and_process_channel(channel_id, dlog=None):
+    """ Scrape a channel, with fallbacks.
+        Can be called standalone.
+    """
+    channel = None
+    use_ytdlp = False
+
+    if dlog is None:
+        dlog = sys.stdout
+
+    if channel_id in channels:
+        channel = channels[channel_id]
+    else:
+        channel = Channel(channel_id)
+        channels[channel_id] = channel
+        # use chat_downloader to get initial video list
+        print("New channel: " + channel.channel_id)
+
+    if not use_ytdlp:
+        try:
+            scrape_and_process_channel_chatdownloader(channel, dlog)
+        except Exception:
+            print("failed to scrape channel list with chat_downloader:", channel_id, file=sys.stderr)
+            traceback.print_exc()
+            use_ytdlp = True
+
+    if use_ytdlp:
+        invoke_channel_scraper(channel)
+        process_channel_videos(channel, dlog)
+
+    # Scrape community tab page for links (esp. member stream links)
+    # Currently only try this when cookies are provided.
+    if os.path.exists(channel_id + ".txt"):
+        invoke_channel_scraper(channel, community_scrape=True)
+        process_channel_videos(channel, dlog)
+
+
 def update_lives_status_channellist(dlog):
     """ Read channels.txt for a list of channel IDs to process. """
     try:
         if os.path.exists(channelsfile):
             with open(channelsfile) as channellist:
                 for channel_id in [x.strip().split()[0] for x in channellist.readlines()]:
-                    channel = None
-                    use_ytdlp = False
-
-                    if channel_id in channels:
-                        channel = channels[channel_id]
-                    else:
-                        channel = Channel(channel_id)
-                        channels[channel_id] = channel
-                        # use chat_downloader to get initial video list
-                        print("New channel: " + channel.channel_id)
-
-                    if not use_ytdlp:
-                        try:
-                            scrape_and_process_channel_chatdownloader(channel, dlog)
-                        except Exception:
-                            print("failed to scrape channel list with chat_downloader:", channel_id, file=sys.stderr)
-                            traceback.print_exc()
-                            use_ytdlp = True
-
-                    if use_ytdlp:
-                        invoke_channel_scraper(channel)
-                        process_channel_videos(channel, dlog)
-
-                    # Scrape community tab page for links (esp. member stream links)
-                    # Currently only try this when cookies are provided.
-                    if os.path.exists(channel_id + ".txt"):
-                        invoke_channel_scraper(channel, community_scrape=True)
-                        process_channel_videos(channel, dlog)
+                    scrape_and_process_channel(channel_id=channel_id, dlog=dlog)
 
     except Exception:
         print("warning: unexpected error with processing channels.txt", file=sys.stderr)
