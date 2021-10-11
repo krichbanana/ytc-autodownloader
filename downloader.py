@@ -27,6 +27,15 @@ from utils import (
     extract_video_id_from_yturl
 )
 
+
+try:
+    from cookie_control import check_cookies_allowed
+except ImportError:
+    def check_cookies_allowed(mainpid):
+        global cookies_allowed
+        cookies_allowed = True
+
+
 # testing
 ids = [
     'p1KolyCqICI',  # past broadcast
@@ -90,7 +99,10 @@ def write_status(final_status: str, video_id: str, init_timestamp):
         fp.write(json.dumps(res))
 
 
-def try_for_cookies(video_id=None, channel_id=None):
+cookies_allowed = False
+
+
+def try_for_cookies(video_id=None, channel_id=None, allow_generic=True):
     prefixes = ('', 'oo/', '../')
 
     candidates = []
@@ -102,11 +114,16 @@ def try_for_cookies(video_id=None, channel_id=None):
         for prefix in prefixes:
             candidates.append(prefix + channel_id + ".txt")
 
-    for prefix in prefixes:
-        candidates.append(prefix + "cookies.txt")
+    if allow_generic is True:
+        for prefix in prefixes:
+            candidates.append(prefix + "cookies.txt")
 
     for path in candidates:
         if os.path.exists(path):
+            if not cookies_allowed:
+                print('warning: cookies forbidden, rejecting found cookies', file=sys.stderr)
+                return None
+
             return path
 
     return None
@@ -133,17 +150,25 @@ def run_loop(outname, video_id):
     max_retries = 720   # 12 hours, with 60 second delays
     init_timestamp = dt.datetime.utcnow().timestamp()
 
+    old_video_id = video_id
+    video_id = extract_video_id_from_yturl(video_id, strict=False)
+    if old_video_id != video_id:
+        print('(downloader) warning: video_id was not a bare id.', file=sys.stderr)
+
+    check_cookies_allowed()
+
+    # Check for cookies at <video_id>.txt
+    cookies = try_for_cookies(video_id=video_id, channel_id=None, allow_generic=False)
+    if cookies is not None:
+        print('(downloader) providing cookies since video-specific cookies present:', cookies)
+
     # Don't pass cookies if we don't have to.
-    downloader = ChatDownloader(cookies=None)
+    downloader = ChatDownloader(cookies=cookies)
 
     # Forcefully create a YouTube session
     youtube = downloader.create_session(YouTubeChatDownloader)
 
     try:
-        old_video_id = video_id
-        video_id = extract_video_id_from_yturl(video_id)
-        if old_video_id != video_id:
-            print('(downloader) warning: video_id was not a bare id.', file=sys.stderr)
         details = youtube.get_video_data(video_id)
         is_live = details.get('status') in {'live', 'upcoming'}
         channel_id = details.get('author_id')
@@ -154,8 +179,9 @@ def run_loop(outname, video_id):
             print('title missing, will dump video details')
             print('(downloader) video_id:', video_id)
             print('(downloader)', details)
+
         # No continuation? Possibly members-only.
-        if details.get('continuation_info') == {}:
+        if details.get('continuation_info') == {} and cookies is None:
             cookies = try_for_cookies(video_id=video_id, channel_id=channel_id)
             if cookies is not None:
                 print('(downloader) providing cookies since chat is missing:', cookies)
