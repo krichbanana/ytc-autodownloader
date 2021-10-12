@@ -20,6 +20,7 @@ from utils import (
     meta_extract_raw_live_status
 )
 
+
 try:
     from write_cgroup import write_cgroup
 except ImportError:
@@ -234,7 +235,7 @@ class Channel:
         """ Add videos to our list, and possibly our current batch
             Modifies timestamp on success
         """
-        new_videos = set(video_id) - self.videos
+        new_videos = set(video_ids) - self.videos
         if len(new_videos) > 0:
             self.modify_timestamp = get_timestamp_now()
             self.did_discovery_print = False
@@ -1259,6 +1260,8 @@ def run_periodic_rescrape_handler(video_id):
 
 
 q = mp.SimpleQueue()
+statuslog = None
+mainpid = None
 
 
 def process_dlpid_queue():
@@ -1483,6 +1486,12 @@ def process_one_status(video: Video, first=False):
 
 
 def handle_special_signal(signum, frame):
+    global mainpid
+    if os.getpid() != mainpid:
+        print('warning: got reexec signal, but mainpid doesn\'t match', file=sys.stderr)
+        return
+
+    statuslog.close()
     os.makedirs('dump', exist_ok=True)
 
     try:
@@ -1491,8 +1500,9 @@ def handle_special_signal(signum, frame):
                 # Fine as long as no objects in the class.
                 fp.write(json.dumps(video.__dict__, sort_keys=True))
     except Exception:
-        print('dumping lives failed.')
+        print('reexec: dumping lives failed. will restart...')
         traceback.print_exc()
+        restart()
     else:
         print('dumping lives succeeded.')
 
@@ -1509,43 +1519,112 @@ def handle_special_signal(signum, frame):
         print("SCRAPER_SLEEP_INTERVAL=" + str(SCRAPER_SLEEP_INTERVAL), file=fp)
         print("CHANNEL_SCRAPE_LIMIT=" + str(CHANNEL_SCRAPE_LIMIT), file=fp)
 
+    print('reexec: about to start')
+    reexec()
+
+
+def load_dump():
+    print('reexec: reexec specified, loading dump')
+    if not os.path.exists('dump'):
+        os.chdir('oo')
+    if not os.path.exists('dump'):
+        print('reexec: cannot load from dump; dump directory not found')
+        return False
+
+    global lives
+    try:
+        os.system('jq -as <dump/lives >dump/lives.jq')
+        with open("dump/lives.jq", "r") as fp:
+            jsonres = json.load(fp)
+            for viddict in jsonres:
+                video = Video('XXXXXXXXXXX')
+                video.__dict__ = viddict
+                lives[video.video_id] = video
+    except Exception:
+        print('reexec: recalling lives failed.')
+        lives = {}
+        traceback.print_exc()
+        return False
+    else:
+        print('reexec: recalling lives succeeded.')
+
+    try:
+        with open("dump/pids", "r") as fp:
+            jsonres = json.load(fp)
+            global pids
+            pids = jsonres
+            print("reexec: number of videos loaded from pids: " + str(len(pids)))
+            for video_id in pids:
+                (pypid, dlpid) = pids[video_id]
+
+                if not check_pid(dlpid):
+                    print("reexec: warning: dlpid no longer exists: " + video_id)
+    except Exception:
+        print('reexec: recalling pids failed.')
+        traceback.print_exc()
+    else:
+        print('reexec: recalling pids succeeded.')
+
+    return True
+
+
+def restart():
+    global mainpid
+    os.chdir('..')
+    print(f"{mainpid = }, going away for program restart")
+    os.execl('./scraper_oo.py', './scraper_oo.py')
+
+
+def reexec():
+    global mainpid
+    os.chdir('..')
+    print(f"{mainpid = }, going away for program reexec")
+    os.execl('./scraper_oo.py', './scraper_oo.py', 'reexec')
+
 
 rescrape = rescrape_ytdlp
 
 invoke_scraper = invoke_scraper_ytdlp
 
 
-# TODO
-if __name__ == '__main__':
+def main():
+    global mainpid
     mainpid = os.getpid()
     write_cgroup(mainpid)
     print(f"{mainpid = }")
 
-    # Prep storage and persistent state directories
-    os.makedirs('oo', exist_ok=True)
-    os.chdir('oo')
-    os.makedirs('by-video-id', exist_ok=True)
-    os.makedirs('chat-logs', exist_ok=True)
-    os.makedirs('pid', exist_ok=True)
+    fast_startup = False
+    if len(sys.argv) == 2 and sys.argv[1] == 'reexec':
+        print("reexec: number of inherited children: " + str(len(mp.active_children())))   # side effect: joins finished tasks -- exec doesn't seem to inherit children
+        fast_startup = load_dump()
+
+    if not fast_startup:
+        # Prep storage and persistent state directories
+        os.makedirs('oo', exist_ok=True)
+        os.chdir('oo')
+        os.makedirs('by-video-id', exist_ok=True)
+        os.makedirs('chat-logs', exist_ok=True)
+        os.makedirs('pid', exist_ok=True)
 
     signal.signal(signal.SIGUSR1, handle_special_signal)
 
     print("Updating lives status", flush=True)
     update_lives_status()
 
-    # Initial load
-    print("Starting initial pass", flush=True)
-
     nowtimestamp = str(get_timestamp_now())
     with open("discovery.txt", "a") as dlog:
         print("program started: " + nowtimestamp, file=dlog, flush=True)
         dlog.flush()
+    global statuslog
     statuslog = open("status.txt", "a")
     print("program started: " + nowtimestamp, file=statuslog)
     statuslog.flush()
     os.fsync(statuslog.fileno())
 
-    if True:
+    if not fast_startup:
+        # Initial load
+        print("Starting initial pass", flush=True)
+
         try:
             # Populate cache from disk
             for video_id, video in lives.items():
@@ -1577,12 +1656,21 @@ if __name__ == '__main__':
             start_watchdog()
             raise RuntimeError("Exception encountered during initial load processing") from exc
 
+    else:
+        print("Skipped initial pass", flush=True)
+
     statuslog.flush()
 
     print("Starting main loop", flush=True)
     while True:
         try:
-            time.sleep(SCRAPER_SLEEP_INTERVAL)
+            if fast_startup:
+                fast_startup = False
+                print("reducing initial loop delay", flush=True)
+                time.sleep(5)
+            else:
+                time.sleep(SCRAPER_SLEEP_INTERVAL)
+
             update_lives_status()
 
             # Try to make sure downloaders are tracked with correct state
@@ -1631,3 +1719,7 @@ if __name__ == '__main__':
             print(end='', flush=True)
 
             statuslog.flush()
+
+
+if __name__ == '__main__':
+    main()
