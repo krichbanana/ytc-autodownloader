@@ -1287,12 +1287,22 @@ def invoke_downloader(video: Video):
         video_id = video.video_id
 
         print('invoking for ' + str(video_id))
+        if video.progress == 'unscraped':
+            print("warning: progress never set to 'waiting' for video: " + video_id + f" (status: {video.status}) (progress: {video.progress})", file=sys.stderr)
 
         if pids.get(video_id):
-            print("warning: duplicate invocation for video " + video_id + " (according to internal PID state)", file=sys.stderr)
+            (pypid, dlpid) = pids[video_id]
+            pypid_ok = check_pid(pypid)
+            dlpid_ok = check_pid(dlpid)
+            print("warning: duplicate invocation for video " + video_id + f" (according to internal PID state. alive? pypid: {pypid}, {pypid_ok}; dlpid: {dlpid}, {dlpid_ok})", file=sys.stderr)
+            if pypid_ok and dlpid_ok:
+                print("warning:   cancelling invocation for video " + video_id + " (both pypid and dlpid present). status: {video.status}; progress: {video.progress}", file=sys.stderr)
+                if video.progress == 'waiting':
+                    video.set_progress('downloading')
+                return
 
         if video.status not in {'prelive', 'live'}:
-            print("warning: cancelling invocation for video " + video_id + f" (cannot invoke for status {video.status})", file=sys.stderr)
+            print("warning: cancelling invocation for video " + video_id + f" (cannot invoke for status: {video.status})", file=sys.stderr)
             # HACK to stop the spam
             video.progress = 'missed'
             return
@@ -1657,7 +1667,21 @@ def main():
             raise RuntimeError("Exception encountered during initial load processing") from exc
 
     else:
-        print("Skipped initial pass", flush=True)
+        print("Skipped initial pass; doing simple corruption check.", flush=True)
+        for video in lives.values():
+            if video.progress == 'waiting':
+                print(f"(initial check afrer reexec) video {video.video_id}: resetting progress after possible crash: {video.progress} -> unscraped")
+                video.reset_progress()
+            elif video.progress == 'downloading':
+                try:
+                    (pypid, dlpid) = pids[video_id]
+                except Exception:
+                    print(f"(initial check afrer reexec) video {video.video_id}: resetting progress after possible crash (pid unknown!): {video.progress} -> unscraped")
+                    video.reset_progress()
+                if not check_pid(dlpid):
+                    # if the OS recycles PIDs, then this check might give bogus results. Obviously, don't 'reexec' after an OS reboot.
+                    print(f"(initial check afrer reexec) video {video.video_id}: resetting progress after possible crash (pid {dlpid}: check failed): {video.progress} -> unscraped")
+                    video.reset_progress()
 
     statuslog.flush()
 
