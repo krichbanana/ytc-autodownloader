@@ -31,7 +31,7 @@ from utils import (
 try:
     from cookie_control import check_cookies_allowed
 except ImportError:
-    def check_cookies_allowed(mainpid):
+    def check_cookies_allowed():
         global cookies_allowed
         cookies_allowed = True
 
