@@ -244,7 +244,7 @@ def run_loop(outname, video_id):
             retry = True
 
             try:
-                chat = downloader.get_chat(video_id, output=output_file, message_groups=['all'], indent=2, overwrite=False)
+                chat = downloader.get_chat(video_id, output=output_file, message_groups=['all'], indent=2, overwrite=False, interruptible_retry=False)
 
                 private = False
 
