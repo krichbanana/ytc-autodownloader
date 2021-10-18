@@ -518,7 +518,7 @@ def invoke_scraper_chatdownloader(video_id, youtube=None, skip_status=False):
         downloader = ChatDownloader()
         youtube = downloader.create_session(YouTubeChatDownloader)
 
-    video_data, player_response, *_ = youtube._parse_video_data(video_id)
+    video_data, player_response, *_ = youtube._parse_video_data(video_id, params={'max_attempts': 2})
 
     scraper_status = None
     if not skip_status:
@@ -545,7 +545,7 @@ def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
     downloader = ChatDownloader()
 
     # Forcefully create a YouTube session
-    youtube = downloader.create_session(YouTubeChatDownloader)
+    youtube: YouTubeChatDownloader = downloader.create_session(YouTubeChatDownloader)
 
     limit = CHANNEL_SCRAPE_LIMIT
     count = 0
@@ -559,7 +559,7 @@ def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
     for video_status in ['upcoming', 'live', 'all']:
         perpage_count = 0
         time.sleep(0.1)
-        for basic_video_details in youtube.get_user_videos(channel_id=channel.channel_id, video_status=video_status):
+        for basic_video_details in youtube.get_user_videos(channel_id=channel.channel_id, video_status=video_status, params={'max_attempts': 3}):
             status = 'unknown'
             status_hint = None
 
@@ -1355,9 +1355,9 @@ def _invoke_downloader_start(q, video_id, outfile):
     # Block this fork (hopefully not the main process)
     try:
         proc.wait()
-        print("process fork " + str(pid) + " has waited")
+        print("process fork " + str(pid) + " has waited (video: " + video_id + ")")
     except KeyboardInterrupt:
-        print("process fork " + str(pid) + " was interrupted")
+        print("process fork " + str(pid) + " was interrupted (video: " + video_id + ")")
         raise KeyboardInterrupt from None
 
 
@@ -1453,7 +1453,7 @@ def process_one_status(video: Video, first=False):
 
             details = None
             try:
-                details = youtube.get_video_data(video_id)
+                details = youtube.get_video_data(video_id, params={'max_attempts': 3})
             except Exception:
                 pass
 
@@ -1469,6 +1469,7 @@ def process_one_status(video: Video, first=False):
                 invoke_downloader(video)
 
             else:
+                print("downloader complete:", video_id, file=sys.stderr)
                 video.set_progress('downloaded')
 
                 try:
