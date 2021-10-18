@@ -34,6 +34,7 @@ except ImportError:
     def check_cookies_allowed():
         global cookies_allowed
         cookies_allowed = True
+        return cookies_allowed
 
 
 # testing
@@ -155,7 +156,8 @@ def run_loop(outname, video_id):
     if old_video_id != video_id:
         print('(downloader) warning: video_id was not a bare id.', file=sys.stderr)
 
-    check_cookies_allowed()
+    global cookies_allowed
+    cookies_allowed = check_cookies_allowed()
 
     # Check for cookies at <video_id>.txt
     cookies = try_for_cookies(video_id=video_id, channel_id=None, allow_generic=False)
