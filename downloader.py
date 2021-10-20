@@ -6,6 +6,7 @@ import subprocess
 import signal
 import datetime as dt
 import json
+import traceback
 
 from chat_downloader import ChatDownloader
 from chat_downloader.sites import YouTubeChatDownloader
@@ -93,11 +94,64 @@ def compress(filename):
     print(f"(downloader) compression failed: {filename = }", file=sys.stderr)
 
 
-def write_status(final_status: str, video_id: str, init_timestamp):
-    with open(f"by-video-id/{video_id}.status", "a") as fp:
-        final_timestamp = dt.datetime.utcnow().timestamp()
-        res = {'init_timestamp': init_timestamp, 'final_timestamp': final_timestamp, 'final_status': final_status}
-        fp.write(json.dumps(res))
+# status -> of a video's chat (detected external state); progress -> of the downloader (internal execution state)
+# errors/retries are considered external factors, even if they aren't
+
+
+def write_current_progress(curr_status: str, curr_progress: str, video_id: str, init_timestamp, outfile: str):
+    """ Called during the download for key events """
+    fd = None
+    try:
+        fd = create_file_lock(f"by-video-id/{video_id}.lock")
+        with open(f"by-video-id/{video_id}.dlprog", "a") as fp:
+            curr_timestamp = dt.datetime.utcnow().timestamp()
+            res = {'init_timestamp': init_timestamp, 'curr_timestamp': curr_timestamp, 'curr_status': curr_status, 'curr_progress': curr_progress, 'outfile': outfile}
+            fp.write(json.dumps(res))
+    finally:
+        if fd is not None:
+            remove_file_lock(fd)
+
+
+def write_initial_progress(curr_progress: str, video_id: str, init_timestamp, outfile: str):
+    """ Called after the downloader has just spawned """
+    fd = None
+    try:
+        fd = create_file_lock(f"by-video-id/{video_id}.lock")
+        with open(f"by-video-id/{video_id}.dlstart", "a") as fp:
+            curr_timestamp = dt.datetime.utcnow().timestamp()
+            res = {'init_timestamp': init_timestamp, 'curr_timestamp': curr_timestamp, 'curr_progress': curr_progress, 'outfile': outfile}
+            fp.write(json.dumps(res))
+    finally:
+        if fd is not None:
+            remove_file_lock(fd)
+
+
+def write_final_progress(exit_cause: str, video_id: str, init_timestamp, outfile: str):
+    """ Called when the downloader is about to exit """
+    fd = None
+    try:
+        fd = create_file_lock(f"by-video-id/{video_id}.lock")
+        with open(f"by-video-id/{video_id}.dlend", "a") as fp:
+            final_timestamp = dt.datetime.utcnow().timestamp()
+            res = {'init_timestamp': init_timestamp, 'final_timestamp': final_timestamp, 'exit_cause': exit_cause, 'outfile': outfile}
+            fp.write(json.dumps(res))
+    finally:
+        if fd is not None:
+            remove_file_lock(fd)
+
+
+def write_status(final_status: str, video_id: str, init_timestamp, outfile: str):
+    """ Called after the download has finished """
+    fd = None
+    try:
+        fd = create_file_lock(f"by-video-id/{video_id}.lock")
+        with open(f"by-video-id/{video_id}.status", "a") as fp:
+            final_timestamp = dt.datetime.utcnow().timestamp()
+            res = {'init_timestamp': init_timestamp, 'final_timestamp': final_timestamp, 'final_status': final_status, 'outfile': outfile}
+            fp.write(json.dumps(res))
+    finally:
+        if fd is not None:
+            remove_file_lock(fd)
 
 
 cookies_allowed = False
@@ -130,7 +184,7 @@ def try_for_cookies(video_id=None, channel_id=None, allow_generic=True):
     return None
 
 
-def run_loop(outname, video_id):
+def run_loop(outname, video_id, init_timestamp):
     """ Download chat, retrying on errors """
     # control flow
     errors = 0
@@ -149,7 +203,6 @@ def run_loop(outname, video_id):
 
     output_file = f"{outname}.json"
     max_retries = 720   # 12 hours, with 60 second delays
-    init_timestamp = dt.datetime.utcnow().timestamp()
 
     old_video_id = video_id
     video_id = extract_video_id_from_yturl(video_id, strict=False)
@@ -369,27 +422,27 @@ def run_loop(outname, video_id):
 
         if started:
             if retried:
-                write_status('started+retried+aborted', video_id, init_timestamp)
+                write_status('started+retried+aborted', video_id, init_timestamp, outname)
             else:
-                write_status('started+aborted', video_id, init_timestamp)
+                write_status('started+aborted', video_id, init_timestamp, outname)
         else:
-            write_status('aborted', video_id, init_timestamp)
+            write_status('aborted', video_id, init_timestamp, outname)
 
     elif not started and missed:
         print('(downloader) download missed:', video_id)
 
         if retried:
-            write_status('missed+retried', video_id, init_timestamp)
+            write_status('missed+retried', video_id, init_timestamp, outname)
         else:
-            write_status('missed', video_id, init_timestamp)
+            write_status('missed', video_id, init_timestamp, outname)
 
     else:
         print('(downloader) download complete:', video_id)
 
         if retried:
-            write_status('finished+retried', video_id, init_timestamp)
+            write_status('finished+retried', video_id, init_timestamp, outname)
         else:
-            write_status('finished', video_id, init_timestamp)
+            write_status('finished', video_id, init_timestamp, outname)
 
     print('(downloader) download stats:', num_msgs, "messages for video", video_id)
 
@@ -407,11 +460,26 @@ def handle_special_signal(signum, frame):
     pass
 
 
-if __name__ == '__main__':
+def main():
+    outname = sys.argv[1]
+    video_id = sys.argv[2]
     if len(sys.argv) == 3:
         signal.signal(signal.SIGUSR1, handle_special_signal)
-        run_loop("chat-logs/" + sys.argv[1], sys.argv[2])
+        init_timestamp = dt.datetime.utcnow().timestamp()
+        try:
+            write_initial_progress('invoked', video_id, init_timestamp, outname)
+            run_loop("chat-logs/" + outname, video_id, init_timestamp)
+        except Exception:
+            write_final_progress('crashed', video_id, init_timestamp, outname)
+            print(f"(downloader) fatal exception (pid = {os.getpid()}, ppid = {os.getppid()}, video_id = {video_id}, outname = {outname})")
+            traceback.print_exc()
+        else:
+            write_final_progress('finished', video_id, init_timestamp, outname)
 
     else:
         print("usage: {} '<outname>' '<video ID>'".format(sys.argv[0]))
         sys.exit(EXIT_BADARG)
+
+
+if __name__ == '__main__':
+    main()
