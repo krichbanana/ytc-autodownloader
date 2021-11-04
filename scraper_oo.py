@@ -15,6 +15,7 @@ from chat_downloader.sites import YouTubeChatDownloader
 from utils import (
     check_pid,
     extract_video_id_from_yturl,
+    json_stream_wrapper,
     meta_load_fast,
     meta_extract_start_timestamp,
     meta_extract_raw_live_status
@@ -120,6 +121,8 @@ class Video:
             print(f"warning: new video status suspicious: transitioned from {self.status} to {status}", file=sys.stderr)
             self.warned = True
 
+        self.status_flush_reason = getattr(self, 'status_flush_reason', 'new video object (outdated layout!)')
+
         if status == self.status:
             print(f"warning: new video status suspicious: no change in status: {status}", file=sys.stderr)
             self.warned = True
@@ -151,6 +154,8 @@ class Video:
                 or progress == 'invalid' and self.progress != 'unscraped' \
                 or progress == 'aborted' and self.progress == 'downloaded':
             raise TransitionException(f"progress cannot be set to {progress} from {self.progress}")
+
+        self.progress_flush_reason = getattr(self, 'progress_flush_reason', 'new video object (outdated layout!)')
 
         if progress == self.progress:
             print(f"warning: new progress status suspicious: no change in progress: {progress}", file=sys.stderr)
@@ -569,6 +574,7 @@ def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
         for basic_video_details in youtube.get_user_videos(channel_id=channel.channel_id, video_status=video_status, params={'max_attempts': 3}):
             status = 'unknown'
             status_hint = None
+            just_scraped = False
 
             video_id = basic_video_details.get('video_id')
 
@@ -585,9 +591,20 @@ def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
                     raise RuntimeError('could not extract status hint')
 
             except KeyError:
-                if video_id is not None and lives[video_id].progress not in {'unscraped', 'aborted'} and lives[video_id].status not in {'postlive', 'upload'}:
+                if video_id is not None and video_id in lives and lives[video_id].progress not in {'unscraped', 'aborted'} and lives[video_id].status not in {'postlive', 'upload'}:
                     print(f"warning: status hint extraction: unexpected KeyError... {count = } {perpage_count = } (+1) ... {valid_count = } {skipped = } {limit = } ... {seen_vids = } ... {basic_video_details = })", file=sys.stderr)
                     traceback.print_exc()
+                elif video_id not in lives:
+                    video = get_or_init_video(video_id)
+                    print(f"warning: status hint extraction: no status hint and new video, doing direct video scrape", file=sys.stderr)
+                    rescrape_chatdownloader(video, channel=channel, youtube=youtube)
+                    just_scraped = True
+                    if video.meta is not None:
+                        live_status = video.meta.get('live_status')
+                        if live_status == 'is_upcoming':
+                            status = 'prelive'
+                        elif live_status == 'is_live':
+                            status = 'live'
                 else:
                     # 'waiting' may be hidden on the player response page (possibly a server bug, but could also be intentional)
                     print(f"warning: status hint extraction: unexpected KeyError, already scraped, not live... {basic_video_details = })", file=sys.stderr)
@@ -631,7 +648,8 @@ def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
             channel.add_video(video)
 
             # rescrape and process a new video
-            rescrape_chatdownloader(video, channel=channel, youtube=youtube)
+            if not just_scraped:
+                rescrape_chatdownloader(video, channel=channel, youtube=youtube)
 
             persist_meta(video, fresh=True, clobber_pid=False)
 
@@ -1424,10 +1442,13 @@ def delete_ytmeta_raw(video: Video, suffix=None):
         general_stats[keyname] = general_stats.setdefault(keyname, 0) + 1
 
 
-def process_one_status(video: Video, first=False, just_invoked=False):
+def process_one_status(video: Video, first=False, just_invoked=False, force=False):
     # Process only on change
     if video.did_progress_print:
-        return
+        if not force:
+            return
+        else:
+            print(f'forced progress update for video {video.video_id}')
     else:
         print(f'progress update for video {video.video_id}, reason: {video.progress_flush_reason}')
         video.did_progress_print = True
@@ -1771,7 +1792,7 @@ def main():
         print("Skipped initial pass; doing simple corruption check.", flush=True)
         for video in lives.values():
             if video.progress == 'waiting':
-                print(f"(initial check afrer reexec) video {video.video_id}: resetting progress after possible crash: {video.progress} -> unscraped")
+                print(f"(initial check after reexec) video {video.video_id}: resetting progress after possible crash: {video.progress} -> unscraped")
                 video.reset_progress()
 
             elif video.progress == 'downloading':
@@ -1779,15 +1800,33 @@ def main():
                     (pypid, dlpid) = pids[video.video_id]
                     if not check_pid(dlpid):
                         # if the OS recycles PIDs, then this check might give bogus results. Obviously, don't 'reexec' after an OS reboot.
-                        print(f"(initial check afrer reexec) video {video.video_id}: resetting progress after possible crash (pid {dlpid}: check failed): {video.progress} -> unscraped")
-                        video.reset_progress()
+                        dlinfofile = f'by-video-id/{video.video_id}.dlend'
+                        crashed = True
+                        if os.path.exists(dlinfofile):
+                            try:
+                                dlinfo = json.load(open(dlinfofile))
+                                crashed = dlinfo.get('exit_cause') != 'finished'
+                            except json.JSONDecodeError:
+                                try:
+                                    dlinforaw = open(dlinfofile).read()
+                                    for dlinfo in json_stream_wrapper(dlinforaw):
+                                        dlinfo = json.loads(open(dlinfofile))
+                                        crashed = dlinfo.get('exit_cause') != 'finished'
+                                        if not crashed:
+                                            break
+                                except Exception:
+                                    pass
+
+                        if crashed:
+                            print(f"(initial check after reexec) video {video.video_id}: resetting progress after possible crash (pid {dlpid}: check failed): {video.progress} -> unscraped")
+                            video.reset_progress()
 
                 except KeyError:
-                    print(f"(initial check afrer reexec) video {video.video_id}: resetting progress after possible crash (pid unknown!): {video.progress} -> unscraped")
+                    print(f"(initial check after reexec) video {video.video_id}: resetting progress after possible crash (pid unknown!): {video.progress} -> unscraped")
                     video.reset_progress()
 
                 except Exception:
-                    print(f"(initial check afrer reexec) video {video.video_id}: resetting progress after possible crash (exception!): {video.progress} -> unscraped")
+                    print(f"(initial check after reexec) video {video.video_id}: resetting progress after possible crash (exception!): {video.progress} -> unscraped")
                     video.reset_progress()
 
     statuslog.flush()
@@ -1811,8 +1850,32 @@ def main():
             for video in lives.values():
                 maybe_rescrape(video)
 
+            for video_id in pids.copy():
+                if video not in lives:
+                    recall_video(video_id, filter_progress=True)
+                    if video.progress == 'waiting':
+                        # This may modify our pid list, take care above.
+                        try:
+                            (pypid, dlpid) = pids[video.video_id]
+                            if not check_pid(dlpid):
+                                process_one_status(video, force=True)
+
+                        except KeyError:
+                            process_one_status(video, force=True)
+
             for video in lives.values():
-                process_one_status(video)
+                # while there is a duplication of effort here, we need to advance the progress once somehow...
+                if not video.did_progress_print:
+                    process_one_status(video)
+                elif video.progress == 'downloading':
+                    try:
+                        (pypid, dlpid) = pids[video.video_id]
+                        if not check_pid(dlpid):
+                            process_one_status(video, force=True)
+
+                    except KeyError:
+                        print(f"(loop check) video {video.video_id}: resetting progress after possible corruption (pid unknown!): {video.progress} -> unscraped")
+                        video.reset_progress()
 
         except KeyError:
             print("warning: internal inconsistency! squashing KeyError exception...", file=sys.stderr)
@@ -1847,6 +1910,15 @@ def main():
             print("number of meta objects:", counters['meta'])
             print("number of rawmeta objects:", counters['rawmeta'])
             print("number of tracked pid groups: " + str(len(pids)))
+
+            pid_count = 0
+            for video_id in pids:
+                (pypid, dlpid) = pids[video_id]
+
+                if check_pid(dlpid):
+                    pid_count += 1
+
+            print("number of valid tracked pids: " + str(pid_count))
             print(end='', flush=True)
 
             statuslog.flush()

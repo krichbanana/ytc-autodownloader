@@ -183,6 +183,25 @@ def meta_extract_raw_live_latency_class(meta):
         return None
 
 
+def json_stream_wrapper(blob: str):
+    """ Convert an improperly stored multi-json string into a generator list """
+    try:
+        yield json.loads(blob)
+    except json.JSONDecodeError as e:
+        error = True
+        while error:
+            yield json.loads(e.doc[0:e.pos])
+            try:
+                yield json.loads(e.doc[e.pos:])
+                error = False
+            except json.JSONDecodeError as e2:
+                error = True
+                if e2.pos == 0:
+                    print('json stream loop: no progress', file=sys.stderr)
+                    raise
+                e = e2
+
+
 if __name__ == '__main__':
     assert extract_video_id_from_yturl("https://www.youtube.com/watch?v=z80mWoPiZUc") == "z80mWoPiZUc"
     assert extract_video_id_from_yturl("https://www.youtube.com/watch?v=z80mWoPiZUc?t=1s") == "z80mWoPiZUc"
