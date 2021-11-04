@@ -91,10 +91,12 @@ class Video:
         self.meta = None
         self.rawmeta = None
         # might change
+        self.did_discovery_print = False
         self.did_status_print = False
         self.did_progress_print = False
-        self.did_discovery_print = False
         self.did_meta_flush = False
+        self.status_flush_reason = 'new video object'
+        self.progress_flush_reason = 'new video object'
         self.meta_flush_reason = 'new video object'
 
     def set_status(self, status: str):
@@ -122,10 +124,11 @@ class Video:
             print(f"warning: new video status suspicious: no change in status: {status}", file=sys.stderr)
             self.warned = True
         else:
+            if self.did_status_print:
+                self.status_flush_reason = f'status changed: {self.status} -> {status}'
+            else:
+                self.status_flush_reason += f'; {self.status} -> {status}'
             self.did_status_print = False
-            if self.did_meta_flush:
-                self.meta_flush_reason = f'status changed: {self.status} -> {status}'
-            self.did_meta_flush = False
 
         self.transition_timestamp = get_timestamp_now()
         self.status = status
@@ -153,10 +156,11 @@ class Video:
             print(f"warning: new progress status suspicious: no change in progress: {progress}", file=sys.stderr)
             self.warned = True
         else:
+            if self.did_progress_print:
+                self.progress_flush_reason = f'progress changed: {self.progress} -> {progress}'
+            else:
+                self.progress_flush_reason += f'; {self.progress} -> {progress}'
             self.did_progress_print = False
-            if self.did_meta_flush:
-                self.meta_flush_reason = f'progress changed: {self.progress} -> {progress}'
-            self.did_meta_flush = False
 
         self.transition_timestamp = get_timestamp_now()
         self.progress = progress
@@ -167,10 +171,14 @@ class Video:
 
     def reset_status(self):
         """ Set the status to 'unknown'. Useful for clearing state loaded from disk. """
+        self.did_status_print = False
+        self.status_flush_reason = f'status reset: {self.status} -> unknown'
         self.status = 'unknown'
 
     def reset_progress(self):
         """ Set progress to 'unscraped'. Useful for clearing state loaded from disk. """
+        self.did_progress_print = False
+        self.progress_flush_reason = f'progress reset: {self.progress} -> unscraped'
         self.progress = 'unscraped'
 
     def prepare_meta(self):
@@ -479,7 +487,6 @@ def rescrape_chatdownloader(video: Video, channel=None, youtube=None):
         meta['live_status'] = 'not_live'
 
     video.set_status(status)
-    video.reset_progress()
 
     video.did_meta_flush = False
     word = None
@@ -497,10 +504,10 @@ def rescrape_chatdownloader(video: Video, channel=None, youtube=None):
     rawmeta = meta.get('raw')
     if not rawmeta:
         # Note: rawmeta may be older than meta, but it's better than being lost.
-        video.set_progress('aborted')
+        if video.progress not in {'downloading', 'downloaded', 'missed'}:
+            video.set_progress('aborted')
     else:
         video.rawmeta = rawmeta
-        video.set_progress('waiting')
     video.meta_timestamp = get_timestamp_now()
 
     try:
@@ -623,9 +630,10 @@ def scrape_and_process_channel_chatdownloader(channel: Channel, dlog):
 
             channel.add_video(video)
 
+            # rescrape and process a new video
             rescrape_chatdownloader(video, channel=channel, youtube=youtube)
 
-            persist_meta(video, fresh=True)
+            persist_meta(video, fresh=True, clobber_pid=False)
 
             if perpage_count >= limit:
                 print(f"perpage limit of {limit} reached:", video_status)
@@ -731,17 +739,19 @@ def process_channel_videos(channel: Channel, dlog):
                     video.did_meta_flush = False
                     video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin, after cache miss)'
 
-                process_ytmeta(video)
+                # There's an optimization opportunity for reducing disk flushes here, but we forego it
 
-                # Avoid redundant disk flushes (as long as we presume that the title/description/listing status won't change)
-                # I look at this and am confused by the '==' here (and one place elsewhere)...
+                # has parity with maybe_rescrape(); should only need to be called on new videos
+                if video.progress == 'unscraped':
+                    process_ytmeta(video)
+
+                # has parity with maybe_rescrape() as well
                 if cache_miss or (saved_progress not in {'missed', 'invalid'} and saved_progress != video.progress):
                     persist_meta(video, fresh=True)
 
                 if not video.did_meta_flush:
-                    # Essentially nerfs the above performance optimization...
                     print("warning: didn't flush meta for channel video; flushing now", file=sys.stderr)
-                    persist_meta(video, fresh=True)
+                    persist_ytmeta(video, fresh=True)
 
     except IOError:
         print("warning: unexpected I/O error when processing channel scrape results", file=sys.stderr)
@@ -758,29 +768,65 @@ def process_channel_videos(channel: Channel, dlog):
     channel.clear_batch()
 
 
-def persist_meta(video: Video, fresh=False, clobber=True, clobber_pid=None):
+def persist_basic_state(video: Video, clobber=True, clobber_pid=None):
+    """ Write status and progress info to state file, flush pid; ytmeta is excluded """
     video_id = video.video_id
+    statefile = 'by-video-id/' + video_id
+    pidfile = 'pid/' + video_id
 
-    metafile = 'by-video-id/' + video_id
-
-    # Debug switch
-    if DISABLE_PERSISTENCE:
-        print('NOT updating ' + metafile)
+    if not check_meta_persistence_enabled(video):
         return
 
-    if clobber or not os.path.exists(metafile):
-        print('Updating ' + metafile)
+    state = {}
+    state['status'] = video.status
+    state['progress'] = video.progress
 
     if clobber_pid is None:
         clobber_pid = clobber
 
-    pidfile = 'pid/' + video_id
-    meta = {}
-    meta['status'] = video.status
+    if clobber or not os.path.exists(statefile):
+        print('Updating statefile ' + statefile)
+        with open(statefile, 'wb') as fp:
+            fp.write(json.dumps(state, indent=1).encode())
 
-    # TODO: only process_dlpid_queue uses fresh=False, so the "saved" progress is mostly useless.
-    # Best just special-case that setter function, if even needed.
-    meta['progress'] = video.progress
+    if clobber_pid or not os.path.exists(pidfile):
+        with open(pidfile, 'wb') as fp:
+            if pids.get(video_id) is not None:
+                # Write dlpid to file
+                fp.write(str(pids[video_id][1]).encode())
+
+
+def check_meta_persistence_enabled(video: Video):
+    """ Check if DISABLE_PERSISTENCE is set and run handling.
+        Return true if it is not set.
+    """
+    statefile = 'by-video-id/' + video.video_id
+
+    # Debug switch
+    if DISABLE_PERSISTENCE:
+        print('NOT updating ' + statefile)
+        if not video.did_meta_flush:
+            print("  meta flush reason (no-op):", video.meta_flush_reason)
+        else:
+            print("  meta flush reason (no-op, already attempted?):", video.meta_flush_reason)
+
+        video.did_meta_flush = True
+        video.meta_flush_reason = 'no reason set (no-op enabled)'
+
+    return not DISABLE_PERSISTENCE
+
+
+def persist_meta(video: Video, fresh=False, clobber=True, clobber_pid=None):
+    """ Persist state and ytmeta at once. """
+    if not check_meta_persistence_enabled(video):
+        return
+
+    persist_basic_state(video, clobber=clobber, clobber_pid=clobber_pid)
+    persist_ytmeta(video, fresh=fresh, clobber=clobber)
+
+
+def persist_ytmeta(video: Video, fresh=False, clobber=True):
+    metafile = 'by-video-id/' + video.video_id
 
     # Write ytmeta to a separate file (to avoid slurping large amounts of data)
     if video.meta is not None:
@@ -822,6 +868,9 @@ def persist_meta(video: Video, fresh=False, clobber=True, clobber_pid=None):
                         fp.write(json.dumps(ytmeta, indent=1).encode())
                 except RuntimeError:
                     traceback.print_exc()
+            else:
+                print('NOT updating (exists and noclobber set): ' + metafileyt_status)
+
         finally:
             try:
                 # Since we don't deep-copy, don't keep 'raw' in the meta dict.
@@ -830,17 +879,15 @@ def persist_meta(video: Video, fresh=False, clobber=True, clobber_pid=None):
             except KeyError:
                 pass
 
-    if clobber or not os.path.exists(metafile):
-        with open(metafile, 'wb') as fp:
-            fp.write(json.dumps(meta, indent=1).encode())
+    if not video.did_meta_flush:
+        print("  meta flush reason:", video.meta_flush_reason)
+    else:
+        print("  meta flush reason (already flushed?):", video.meta_flush_reason)
+        if fresh:
+            # "fresh" is a holdover from process_dlpid_queue, which passed fresh=False back when progress had a copy.
+            # Nearly all calls to this function use it, so repurpose it as a debugging hint.
+            print("    meta was said to be fresh, did we lie?")
 
-    if clobber_pid or not os.path.exists(pidfile):
-        with open(pidfile, 'wb') as fp:
-            if pids.get(video_id) is not None:
-                # Write dlpid to file
-                fp.write(str(pids[video_id][1]).encode())
-
-    print("  meta flush reason:", video.meta_flush_reason)
     video.did_meta_flush = True
     video.meta_flush_reason = 'no reason set'
 
@@ -1101,7 +1148,8 @@ def rescrape_ytdlp(video: Video):
     jsonres = invoke_scraper_ytdlp(video.video_id)
     if jsonres is None:
         # Mark as aborted here, before processing
-        video.set_progress('aborted')
+        if video.progress not in {'downloading', 'downloaded', 'missed'}:
+            video.set_progress('aborted')
 
         return None
 
@@ -1279,7 +1327,7 @@ def process_dlpid_queue():
                 lives[vid].set_progress('downloading')
 
         pids[vid] = (pid, dlpid)
-        persist_meta(lives[vid], clobber=False, clobber_pid=True)
+        persist_basic_state(lives[vid], clobber=False, clobber_pid=True)
 
 
 def invoke_downloader(video: Video):
@@ -1376,12 +1424,16 @@ def delete_ytmeta_raw(video: Video, suffix=None):
         general_stats[keyname] = general_stats.setdefault(keyname, 0) + 1
 
 
-def process_one_status(video: Video, first=False):
+def process_one_status(video: Video, first=False, just_invoked=False):
     # Process only on change
-    if video.did_status_print:
+    if video.did_progress_print:
         return
+    else:
+        print(f'progress update for video {video.video_id}, reason: {video.progress_flush_reason}')
+        video.did_progress_print = True
 
     video_id = video.video_id
+    started_download = False
 
     if video.progress == 'waiting':
         if video.meta is None:
@@ -1390,6 +1442,7 @@ def process_one_status(video: Video, first=False):
         else:
             print("status: just invoked: " + video_id, file=statuslog)
             invoke_downloader(video)
+            started_download = True
 
     elif video.progress == 'missed':
         if first:
@@ -1446,7 +1499,10 @@ def process_one_status(video: Video, first=False):
 
             wants_rescrape = True
 
-        if wants_rescrape:
+        if wants_rescrape and just_invoked:
+            print("warning: invocation seems unsuccessful, avoiding immediate retry for video: " + video.video_id, file=sys.stderr)
+
+        elif wants_rescrape:
             # Check status
             downloader = ChatDownloader()
             youtube = downloader.create_session(YouTubeChatDownloader)
@@ -1467,17 +1523,19 @@ def process_one_status(video: Video, first=False):
                     pass
 
                 invoke_downloader(video)
+                started_download = True
 
             else:
                 print("downloader complete:", video_id, file=sys.stderr)
                 video.set_progress('downloaded')
+                video.set_status('postlive')  # a safe assumption
 
                 try:
                     del pids[video_id]
                 except KeyError:
                     pass
 
-                persist_meta(video, fresh=True)
+                persist_basic_state(video)
                 delete_ytmeta_raw(video)
 
     elif video.progress == 'downloaded':
@@ -1488,12 +1546,66 @@ def process_one_status(video: Video, first=False):
 
             delete_ytmeta_raw(video)
 
+    else:
+        print("warning: new downloader status is weird state '{video.progress}': " + video_id, file=statuslog)
+
     if not video.did_meta_flush:
         print("warning: didn't flush meta for video; flushing now", file=sys.stderr)
-        persist_meta(video, fresh=True)
+        persist_ytmeta(video, fresh=True)
 
-    video.did_progress_print = True
+    if started_download:
+        if video.did_progress_print:
+            print("warning: didn't get dlpid in a timely manner: " + video.video_id, file=sys.stderr)
+        else:
+            process_one_status(video, first=False, just_invoked=True)
+            persist_basic_state(video)
+            if video.progress == 'downloading':
+                delete_ytmeta_raw(video)
+
     statuslog.flush()
+
+
+def dump_lives():
+    with open("dump/lives", "w") as fp:
+        for video in lives.values():
+            # Fine as long as no objects in the class.
+            fp.write(json.dumps(video.__dict__, sort_keys=True))
+
+
+def dump_pids():
+    with open("dump/pids", "w") as fp:
+        fp.write(json.dumps(pids))
+
+
+def dump_misc():
+    with open("dump/general_stats", "w") as fp:
+        fp.write(json.dumps(general_stats))
+
+    with open("dump/staticconfig", "w") as fp:
+        print("FORCE_RESCRAPE=" + str(FORCE_RESCRAPE), file=fp)
+        print("DISABLE_PERSISTENCE=" + str(DISABLE_PERSISTENCE), file=fp)
+        print("PERIODIC_SCRAPES=" + str(PERIODIC_SCRAPES), file=fp)
+        print("SCRAPER_SLEEP_INTERVAL=" + str(SCRAPER_SLEEP_INTERVAL), file=fp)
+        print("CHANNEL_SCRAPE_LIMIT=" + str(CHANNEL_SCRAPE_LIMIT), file=fp)
+
+
+def handle_debug_signal(signum, frame):
+    if os.getpid() != mainpid:
+        print('warning: got debug signal, but mainpid doesn\'t match', file=sys.stderr)
+        return
+
+    os.makedirs('dump', exist_ok=True)
+
+    try:
+        dump_lives()
+    except Exception:
+        print('debug: dumping lives failed.')
+        traceback.print_exc()
+    else:
+        print('debug: dumping lives succeeded.')
+
+    dump_pids()
+    dump_misc()
 
 
 def handle_special_signal(signum, frame):
@@ -1506,29 +1618,16 @@ def handle_special_signal(signum, frame):
     os.makedirs('dump', exist_ok=True)
 
     try:
-        with open("dump/lives", "w") as fp:
-            for video in lives.values():
-                # Fine as long as no objects in the class.
-                fp.write(json.dumps(video.__dict__, sort_keys=True))
+        dump_lives()
     except Exception:
         print('reexec: dumping lives failed. will restart...')
         traceback.print_exc()
         restart()
     else:
-        print('dumping lives succeeded.')
+        print('reexec: dumping lives succeeded.')
 
-    with open("dump/pids", "w") as fp:
-        fp.write(json.dumps(pids))
-
-    with open("dump/general_stats", "w") as fp:
-        fp.write(json.dumps(general_stats))
-
-    with open("dump/staticconfig", "w") as fp:
-        print("FORCE_RESCRAPE=" + str(FORCE_RESCRAPE), file=fp)
-        print("DISABLE_PERSISTENCE=" + str(DISABLE_PERSISTENCE), file=fp)
-        print("PERIODIC_SCRAPES=" + str(PERIODIC_SCRAPES), file=fp)
-        print("SCRAPER_SLEEP_INTERVAL=" + str(SCRAPER_SLEEP_INTERVAL), file=fp)
-        print("CHANNEL_SCRAPE_LIMIT=" + str(CHANNEL_SCRAPE_LIMIT), file=fp)
+    dump_pids()
+    dump_misc()
 
     print('reexec: about to start')
     reexec()
@@ -1618,6 +1717,7 @@ def main():
         os.makedirs('pid', exist_ok=True)
 
     signal.signal(signal.SIGUSR1, handle_special_signal)
+    signal.signal(signal.SIGUSR2, handle_debug_signal)
 
     print("Updating lives status", flush=True)
     update_lives_status()
@@ -1673,15 +1773,21 @@ def main():
             if video.progress == 'waiting':
                 print(f"(initial check afrer reexec) video {video.video_id}: resetting progress after possible crash: {video.progress} -> unscraped")
                 video.reset_progress()
+
             elif video.progress == 'downloading':
                 try:
-                    (pypid, dlpid) = pids[video_id]
-                except Exception:
+                    (pypid, dlpid) = pids[video.video_id]
+                    if not check_pid(dlpid):
+                        # if the OS recycles PIDs, then this check might give bogus results. Obviously, don't 'reexec' after an OS reboot.
+                        print(f"(initial check afrer reexec) video {video.video_id}: resetting progress after possible crash (pid {dlpid}: check failed): {video.progress} -> unscraped")
+                        video.reset_progress()
+
+                except KeyError:
                     print(f"(initial check afrer reexec) video {video.video_id}: resetting progress after possible crash (pid unknown!): {video.progress} -> unscraped")
                     video.reset_progress()
-                if not check_pid(dlpid):
-                    # if the OS recycles PIDs, then this check might give bogus results. Obviously, don't 'reexec' after an OS reboot.
-                    print(f"(initial check afrer reexec) video {video.video_id}: resetting progress after possible crash (pid {dlpid}: check failed): {video.progress} -> unscraped")
+
+                except Exception:
+                    print(f"(initial check afrer reexec) video {video.video_id}: resetting progress after possible crash (exception!): {video.progress} -> unscraped")
                     video.reset_progress()
 
     statuslog.flush()
@@ -1747,4 +1853,6 @@ def main():
 
 
 if __name__ == '__main__':
+    if len(sys.argv) == 2 and sys.argv[1] == 'test':
+        sys.exit(0)
     main()
