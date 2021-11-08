@@ -439,10 +439,10 @@ def update_lives_status_channellist(dlog):
         traceback.print_exc()
 
 
-def rescrape_chatdownloader(video: Video, channel=None, youtube=None):
+def rescrape_chatdownloader(video: Video, channel=None, youtube=None, cookies=None):
     """ rescrape_ytdlp, but using chat_downloader """
     video_id = video.video_id
-    video_data, player_response, status = invoke_scraper_chatdownloader(video_id, youtube)
+    video_data, player_response, status = invoke_scraper_chatdownloader(video_id, youtube, skip_status=False, cookies=cookies)
     microformat = player_response['microformat']['playerMicroformatRenderer']
     video_details = player_response['videoDetails']
 
@@ -521,13 +521,13 @@ def rescrape_chatdownloader(video: Video, channel=None, youtube=None):
         pass
 
 
-def invoke_scraper_chatdownloader(video_id, youtube=None, skip_status=False):
+def invoke_scraper_chatdownloader(video_id, youtube=None, skip_status=False, cookies=None):
     """ Like invoke_scraper_ytdlp, but use chat_downloader's python interface instead of forking and calling yt-dlp.
         Try to export the status for the autoscraper as well.
         Returns raw YouTube data and the deduced status.
     """
     if youtube is None:
-        downloader = ChatDownloader()
+        downloader = ChatDownloader(cookies=cookies)
         youtube = downloader.create_session(YouTubeChatDownloader)
 
     video_data, player_response, *_ = youtube._parse_video_data(video_id, params={'max_attempts': 2})
