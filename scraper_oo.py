@@ -1676,7 +1676,7 @@ def handle_special_signal(signum, frame):
     os.makedirs('dump', exist_ok=True)
 
     try:
-        dump_lives()
+        dump_lives(context=main_autoscraper)
     except Exception:
         print('reexec: dumping lives failed. will restart...')
         traceback.print_exc()
@@ -1684,8 +1684,8 @@ def handle_special_signal(signum, frame):
     else:
         print('reexec: dumping lives succeeded.')
 
-    dump_pids()
-    dump_misc()
+    dump_pids(context=main_autoscraper)
+    dump_misc(context=main_autoscraper)
 
     print('reexec: about to start')
     reexec()
