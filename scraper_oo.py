@@ -41,22 +41,30 @@ except ImportError:
 
 # Debug switch
 DISABLE_PERSISTENCE = False
-PERIODIC_SCRAPES = False
 FORCE_RESCRAPE = False
+PERIODIC_SCRAPES = False
+ENABLE_ALTMAIN = False
+ALLOW_COOKIED_COMMUNITY_TAB_SCRAPE = False
 SCRAPER_SLEEP_INTERVAL = 120 * 5 / 2
 CHANNEL_SCRAPE_LIMIT = 30
+
 
 downloadmetacmd = "../yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
 downloadchatprgm = "../downloader.py"
 channelscrapecmd = "../scrape_channel_oo.sh"
 channelpostscrapecmd = "../scrape_community_tab.sh"
-channelsfile = "./channels.txt"
+channelmemberscrapecmd = "../scrape_membership_tab.sh"
+mainchannelsfile = "./channels.txt"
 watchdogprog = "../watchdog.sh"
 holoscrapecmd = 'wget -nv --load-cookies=../cookies-schedule-hololive-tv.txt https://schedule.hololive.tv/lives -O auto-lives_tz'
 
 
 statuses = frozenset(['unknown', 'prelive', 'live', 'postlive', 'upload', 'error'])
 progress_statuses = frozenset(['unscraped', 'waiting', 'downloading', 'downloaded', 'missed', 'invalid', 'aborted'])
+
+
+# For alt-main usage
+is_true_main = True
 
 
 def get_timestamp_now():
@@ -294,6 +302,10 @@ class AutoScraper:
         return video
 
     def update_lives_status(self, /):
+        if not is_true_main:
+            self.update_lives_status_cookied()
+            return
+
         with open("discovery.txt", "a") as dlog:
             try:
                 self.update_lives_status_holoschedule(dlog=dlog)
@@ -312,6 +324,13 @@ class AutoScraper:
             except Exception:
                 print("warning: exception during channellist scrape. Network error?")
                 traceback.print_exc()
+
+    def update_lives_status_cookied(self, /):
+        """ Update membership pages using cookies """
+        if is_true_main:
+            return
+
+        self.update_lives_status_channellist(is_membership=True)
 
     def update_lives_status_holoschedule(self, /, *, dlog: IO = None) -> None:
         """ Process the holoschedule, which updates on a short delay. """
@@ -352,14 +371,19 @@ class AutoScraper:
         # TODO
         pass
 
-    def update_lives_status_channellist(self, *, dlog: IO = None) -> None:
+    def update_lives_status_channellist(self, *, dlog: IO = None, is_membership=False) -> None:
         """ Read channels.txt for a list of channel IDs to process. """
         if dlog is None:
             dlog = sys.stdout
 
+        channels_file = mainchannelsfile
+
+        if is_membership:
+            channels_file = 'channels-cookied.txt'
+
         try:
-            if os.path.exists(channelsfile):
-                with open(channelsfile) as channellist:
+            if os.path.exists(channels_file):
+                with open(channels_file) as channellist:
                     for channel_id in [x.strip().split()[0] for x in channellist.readlines()]:
                         self.scrape_and_process_channel(channel_id=channel_id, dlog=dlog)
 
@@ -368,18 +392,25 @@ class AutoScraper:
             traceback.print_exc()
 
     # TODO: rewrite
-    def process_channel_videos_ytdlp(self, /, channel: Channel, *, dlog):
+    def process_channel_videos_ytdlp(self, /, channel: Channel, *, dlog: IO = None, is_membership=False):
         """ Read scraped channel video list, proccess each video ID, and persist the meta state. """
+        if dlog is None:
+            dlog = sys.stdout
+
         newlives = 0
         knownlives = 0
         numignores: Dict = {}
         channel_id = channel.channel_id
         channel.did_discovery_print = True
 
+        allurl_file = "channel-cached/" + channel_id + ".url.all"
+        if is_membership:
+            allurl_file = "channel-cached/" + channel_id + ".url.mem.all"
+
         channel.start_batch()
 
         try:
-            with open("channel-cached/" + channel_id + ".url.all") as urls:
+            with open(allurl_file) as urls:
                 for video_id in [f.split(" ")[1].strip() for f in urls.readlines()]:
                     # Process each recent video
                     if video_id not in self.lives:
@@ -409,7 +440,7 @@ class AutoScraper:
                     cache_miss = False
 
                     # process precached meta
-                    if video.meta is None:
+                    if video.meta is None and not is_membership:
                         # We may be reloading old URLs after a program restart
                         print("ytmeta cache miss for video " + video_id + " on channel " + channel_id)
                         cache_miss = True
@@ -420,6 +451,12 @@ class AutoScraper:
                         video.rawmeta = video.meta.get('raw')
                         video.did_meta_flush = False
                         video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin, after cache miss)'
+                    elif video.meta is None:
+                        print("ytmeta missing for member video " + video_id + " on channel " + channel_id)
+                        if not video.did_meta_flush:
+                            print("warning: didn't flush meta for channel member video; flushing now", file=sys.stderr)
+                            persist_ytmeta(video, fresh=True)
+                        continue
 
                     # There's an optimization opportunity for reducing disk flushes here, but we forego it
 
@@ -467,6 +504,10 @@ class AutoScraper:
             # use chat_downloader to get initial video list
             print("New channel: " + channel.channel_id)
 
+        # alt-main only
+        if not is_true_main:
+            use_ytdlp = True
+
         if not use_ytdlp:
             try:
                 self.scrape_and_process_channel_chatdownloader(channel, dlog=dlog)
@@ -476,16 +517,18 @@ class AutoScraper:
                 use_ytdlp = True
 
         if use_ytdlp:
-            self.invoke_channel_scraper_ytdlp(channel)
-            self.process_channel_videos_ytdlp(channel, dlog=dlog)
+            is_membership = not is_true_main
+            self.invoke_channel_scraper_ytdlp(channel, membership_scrape=is_membership)
+            self.process_channel_videos_ytdlp(channel, dlog=dlog, is_membership=is_membership)
 
         # Scrape community tab page for links (esp. member stream links)
         # Currently only try this when cookies are provided.
         # TODO: use membership page instead, since it only includes (recent?) member videos and posts.
         # I believe this is a new feature by YouTube (~Nov 2021).
-        if os.path.exists(channel_id + ".txt"):
-            self.invoke_channel_scraper_ytdlp(channel, community_scrape=True)
-            self.process_channel_videos_ytdlp(channel, dlog=dlog)
+        if ALLOW_COOKIED_COMMUNITY_TAB_SCRAPE:
+            if os.path.exists(channel_id + ".txt"):
+                self.invoke_channel_scraper_ytdlp(channel, community_scrape=True)
+                self.process_channel_videos_ytdlp(channel, dlog=dlog)
 
     def scrape_and_process_channel_chatdownloader(self, /, channel: Channel, *, dlog: IO = None):
         """ Use chat_downloader's get_user_videos() to quickly get channel videos and live statuses. """
@@ -602,17 +645,23 @@ class AutoScraper:
 
         print(f"discovery: channels list (via chat_downloader): channel {channel.channel_id} new upcoming/live lives: " + str(valid_count) + "/" + str(count) + " (" + str(skipped) + " known)")
 
-    def invoke_channel_scraper_ytdlp(self, /, channel: Channel, *, community_scrape=False):
+    def invoke_channel_scraper_ytdlp(self, /, channel: Channel, *, community_scrape=False, membership_scrape=False):
         """ Scrape the channel for latest videos and batch-fetch meta state. """
         # Note: some arbitrary limits are set in the helper program that may need tweaking.
-        if not community_scrape:
+        allmeta_file = "channel-cached/" + channel.channel_id + ".meta.new"
+
+        if not community_scrape and not membership_scrape:
             print("Scraping channel " + channel.channel_id)
             subprocess.run(channelscrapecmd + " " + channel.channel_id, shell=True)
-        else:
+        elif not membership_scrape:
             print("Scraping channel community pages " + channel.channel_id)
             subprocess.run(channelpostscrapecmd + " " + channel.channel_id, shell=True)
+        else:
+            print("Scraping channel membership pages " + channel.channel_id)
+            subprocess.run(channelmemberscrapecmd + " " + channel.channel_id, shell=True)
+            allmeta_file = "channel-cached/" + channel.channel_id + ".meta.mem.new"
 
-        with open("channel-cached/" + channel.channel_id + ".meta.new") as allmeta:
+        with open(allmeta_file) as allmeta:
             metalist = []
 
             for jsonres in allmeta.readlines():
@@ -1375,6 +1424,7 @@ def run_periodic_rescrape_handler(video_id, context: AutoScraper):
 q: mp.SimpleQueue = mp.SimpleQueue()
 statuslog: IO = typing.cast(IO, None)
 mainpid: int = typing.cast(int, None)
+altpid: int = typing.cast(int, None)
 
 
 def process_dlpid_queue(*, context: AutoScraper):
@@ -1766,10 +1816,72 @@ rescrape = rescrape_ytdlp
 invoke_scraper = invoke_scraper_ytdlp
 
 
+def start_alt_main():
+    """ Create alt-main process """
+    global altpid
+    alt_proc = mp.Process(target=_invoke_alt_main)
+    alt_proc.start()
+    altpid = alt_proc.pid
+    print(f"{altpid = }")
+
+
+def _invoke_alt_main():
+    """ Process target for starting alt-main """
+    global altpid
+    global is_true_main
+    global main_autoscraper
+    altpid = os.getpid()
+    is_true_main = False
+    main_autoscraper = AutoScraper()
+
+    print("alternate main loop process " + str(altpid) + " started.")
+    alt_main(main_autoscraper)
+
+
+def alt_main(context: AutoScraper):
+    """ Dedicated scraper for cookied scrapes/downloads
+        Ideal for member content or other cookied high-priority content.
+        Conflicts should be avoided by the user, for now.
+    """
+    print("Updating lives status (alt-main)", flush=True)
+    # Alt-main hacks here
+    context.update_lives_status()
+
+    if True:
+        # Initial load
+        print("Starting alt-main initial pass", flush=True)
+
+        try:
+            main_initial_scrape_task(context=context)
+
+        except KeyboardInterrupt:
+            raise
+
+        except Exception as exc:
+            start_watchdog()
+            raise RuntimeError("Exception encountered during initial load processing (alt main)") from exc
+
+    print("Starting alt-main loop", flush=True)
+    while True:
+        try:
+            time.sleep(SCRAPER_SLEEP_INTERVAL)
+
+            main_scrape_task(context=context)
+
+        except KeyboardInterrupt:
+            raise
+
+        except Exception as exc:
+            start_watchdog()
+            raise RuntimeError("Exception encountered during main loop processing (alt main)") from exc
+
+        finally:
+            print_autoscraper_statistics(context=context)
+
+
 def main(context: AutoScraper):
     global mainpid
     mainpid = os.getpid()
-    write_cgroup(mainpid)
     print(f"{mainpid = }")
 
     fast_startup = False
@@ -1787,6 +1899,11 @@ def main(context: AutoScraper):
 
     signal.signal(signal.SIGUSR1, handle_special_signal)
     signal.signal(signal.SIGUSR2, handle_debug_signal)
+
+    # For cookied downloads
+    if ENABLE_ALTMAIN:
+        start_alt_main()
+    write_cgroup(mainpid)
 
     print("Updating lives status", flush=True)
     context.update_lives_status()
@@ -1806,26 +1923,7 @@ def main(context: AutoScraper):
         print("Starting initial pass", flush=True)
 
         try:
-            # Populate cache from disk
-            for video_id, video in context.lives.items():
-                progress = video.progress
-
-                if progress == 'unscraped':
-                    # Try to load missing meta from disk
-                    recall_video(video_id, context=context)
-
-            # There is a 4-hour explanation for this line, take a guess what happened.
-            del video_id, video
-
-            # Try to make sure downloaders are tracked with correct state
-            process_dlpid_queue(context=context)
-
-            # Scrape each video again if needed
-            for video in context.lives.values():
-                maybe_rescrape_initially(video, context=context)
-
-            for video in context.lives.values():
-                process_one_status(video, context=context, first=True)
+            main_initial_scrape_task(context=context)
 
         except KeyboardInterrupt:
             statuslog.flush()
@@ -1838,43 +1936,7 @@ def main(context: AutoScraper):
 
     else:
         print("Skipped initial pass; doing simple corruption check.", flush=True)
-        for video in context.lives.values():
-            if video.progress == 'waiting':
-                print(f"(initial check after reexec) video {video.video_id}: resetting progress after possible crash: {video.progress} -> unscraped")
-                video.reset_progress()
-
-            elif video.progress == 'downloading':
-                try:
-                    (pypid, dlpid) = context.pids[video.video_id]
-                    if not check_pid(dlpid):
-                        # if the OS recycles PIDs, then this check might give bogus results. Obviously, don't 'reexec' after an OS reboot.
-                        dlinfofile = f'by-video-id/{video.video_id}.dlend'
-                        crashed = True
-                        if os.path.exists(dlinfofile):
-                            try:
-                                dlinfo = json.load(open(dlinfofile))
-                                crashed = dlinfo.get('exit_cause') != 'finished'
-                            except json.JSONDecodeError:
-                                try:
-                                    dlinforaw = open(dlinfofile).read()
-                                    for dlinfo in json_stream_wrapper(dlinforaw):
-                                        crashed = dlinfo.get('exit_cause') != 'finished'
-                                        if not crashed:
-                                            break
-                                except json.JSONDecodeError:
-                                    pass
-
-                        if crashed:
-                            print(f"(initial check after reexec) video {video.video_id}: resetting progress after possible crash (pid {dlpid}: check failed): {video.progress} -> unscraped")
-                            video.reset_progress()
-
-                except KeyError:
-                    print(f"(initial check after reexec) video {video.video_id}: resetting progress after possible crash (pid unknown!): {video.progress} -> unscraped")
-                    video.reset_progress()
-
-                except Exception:
-                    print(f"(initial check after reexec) video {video.video_id}: resetting progress after possible crash (exception!): {video.progress} -> unscraped")
-                    video.reset_progress()
+        main_reexec_corruption_check(context=context)
 
     statuslog.flush()
 
@@ -1888,41 +1950,7 @@ def main(context: AutoScraper):
             else:
                 time.sleep(SCRAPER_SLEEP_INTERVAL)
 
-            context.update_lives_status()
-
-            # Try to make sure downloaders are tracked with correct state
-            process_dlpid_queue(context=context)
-
-            # Scrape each video again if needed
-            for video in context.lives.values():
-                maybe_rescrape(video, context=context)
-
-            for video_id in context.pids.copy():
-                if video not in context.lives:
-                    recall_video(video_id, context=context, filter_progress=True)
-                    if video.progress == 'waiting':
-                        # This may modify our pid list, take care above.
-                        try:
-                            (pypid, dlpid) = context.pids[video.video_id]
-                            if not check_pid(dlpid):
-                                process_one_status(video, context=context, force=True)
-
-                        except KeyError:
-                            process_one_status(video, context=context, force=True)
-
-            for video in context.lives.values():
-                # while there is a duplication of effort here, we need to advance the progress once somehow...
-                if not video.did_progress_print:
-                    process_one_status(video, context=context)
-                elif video.progress == 'downloading':
-                    try:
-                        (pypid, dlpid) = context.pids[video.video_id]
-                        if not check_pid(dlpid):
-                            process_one_status(video, context=context, force=True)
-
-                    except KeyError:
-                        print(f"(loop check) video {video.video_id}: resetting progress after possible corruption (pid unknown!): {video.progress} -> unscraped")
-                        video.reset_progress()
+            main_scrape_task(context=context)
 
         except KeyError:
             print("warning: internal inconsistency! squashing KeyError exception...", file=sys.stderr)
@@ -1936,39 +1964,147 @@ def main(context: AutoScraper):
             raise RuntimeError("Exception encountered during main loop processing") from exc
 
         finally:
-            print("number of active children: " + str(len(mp.active_children())))   # side effect: joins finished tasks
-            print("number of known lives: " + str(len(context.lives)))
-
-            counters: Dict[str, Any] = {'progress': {}, 'status': {}, 'meta': 0, 'rawmeta': 0}
-            for video in context.lives.values():
-                counters['status'][video.status] = counters['status'].setdefault(video.status, 0) + 1
-                counters['progress'][video.progress] = counters['progress'].setdefault(video.progress, 0) + 1
-                counters['meta'] += (video.meta is not None)
-                counters['rawmeta'] += (video.rawmeta is not None)
-
-            print("video states:")
-            for status, count in counters['status'].items():
-                print(f"  number with video state {status}:", count)
-
-            print("progress states:")
-            for progress, count in counters['progress'].items():
-                print(f"  number with progress state {progress}:", count)
-
-            print("number of meta objects:", counters['meta'])
-            print("number of rawmeta objects:", counters['rawmeta'])
-            print("number of tracked pid groups: " + str(len(context.pids)))
-
-            pid_count = 0
-            for video_id in context.pids:
-                (pypid, dlpid) = context.pids[video_id]
-
-                if check_pid(dlpid):
-                    pid_count += 1
-
-            print("number of valid tracked pids: " + str(pid_count))
-            print(end='', flush=True)
+            print_autoscraper_statistics(context=context)
 
             statuslog.flush()
+
+
+def main_reexec_corruption_check(*, context):
+    """ Reexec-specific corruption/crash check """
+    for video in context.lives.values():
+        if video.progress == 'waiting':
+            print(f"(initial check after reexec) video {video.video_id}: resetting progress after possible crash: {video.progress} -> unscraped")
+            video.reset_progress()
+
+        elif video.progress == 'downloading':
+            try:
+                (pypid, dlpid) = context.pids[video.video_id]
+                if not check_pid(dlpid):
+                    # if the OS recycles PIDs, then this check might give bogus results. Obviously, don't 'reexec' after an OS reboot.
+                    dlinfofile = f'by-video-id/{video.video_id}.dlend'
+                    crashed = True
+                    if os.path.exists(dlinfofile):
+                        try:
+                            dlinfo = json.load(open(dlinfofile))
+                            crashed = dlinfo.get('exit_cause') != 'finished'
+                        except json.JSONDecodeError:
+                            try:
+                                dlinforaw = open(dlinfofile).read()
+                                for dlinfo in json_stream_wrapper(dlinforaw):
+                                    crashed = dlinfo.get('exit_cause') != 'finished'
+                                    if not crashed:
+                                        break
+                            except json.JSONDecodeError:
+                                pass
+
+                    if crashed:
+                        print(f"(initial check after reexec) video {video.video_id}: resetting progress after possible crash (pid {dlpid}: check failed): {video.progress} -> unscraped")
+                        video.reset_progress()
+
+            except KeyError:
+                print(f"(initial check after reexec) video {video.video_id}: resetting progress after possible crash (pid unknown!): {video.progress} -> unscraped")
+                video.reset_progress()
+
+            except Exception:
+                print(f"(initial check after reexec) video {video.video_id}: resetting progress after possible crash (exception!): {video.progress} -> unscraped")
+                video.reset_progress()
+
+
+def main_initial_scrape_task(*, context):
+    """ Task for each iteration of the main loop, without added delay. """
+    # Populate cache from disk
+    for video_id, video in context.lives.items():
+        progress = video.progress
+
+        if progress == 'unscraped':
+            # Try to load missing meta from disk
+            recall_video(video_id, context=context)
+
+    # There is a 4-hour explanation for this line, take a guess what happened.
+    del video_id, video
+
+    # Try to make sure downloaders are tracked with correct state
+    process_dlpid_queue(context=context)
+
+    # Scrape each video again if needed
+    for video in context.lives.values():
+        maybe_rescrape_initially(video, context=context)
+
+    for video in context.lives.values():
+        process_one_status(video, context=context, first=True)
+
+
+def main_scrape_task(*, context):
+    """ Task run before the main loop starts"""
+    context.update_lives_status()
+
+    # Try to make sure downloaders are tracked with correct state
+    process_dlpid_queue(context=context)
+
+    # Scrape each video again if needed
+    for video in context.lives.values():
+        maybe_rescrape(video, context=context)
+
+    for video_id in context.pids.copy():
+        if video not in context.lives:
+            recall_video(video_id, context=context, filter_progress=True)
+            if video.progress == 'waiting':
+                # This may modify our pid list, take care above.
+                try:
+                    (pypid, dlpid) = context.pids[video.video_id]
+                    if not check_pid(dlpid):
+                        process_one_status(video, context=context, force=True)
+
+                except KeyError:
+                    process_one_status(video, context=context, force=True)
+
+    for video in context.lives.values():
+        # while there is a duplication of effort here, we need to advance the progress once somehow...
+        if not video.did_progress_print:
+            process_one_status(video, context=context)
+        elif video.progress == 'downloading':
+            try:
+                (pypid, dlpid) = context.pids[video.video_id]
+                if not check_pid(dlpid):
+                    process_one_status(video, context=context, force=True)
+
+            except KeyError:
+                print(f"(loop check) video {video.video_id}: resetting progress after possible corruption (pid unknown!): {video.progress} -> unscraped")
+                video.reset_progress()
+
+
+def print_autoscraper_statistics(*, context: AutoScraper):
+    print("number of active children: " + str(len(mp.active_children())))   # side effect: joins finished tasks
+    print("number of known lives: " + str(len(context.lives)))
+
+    counters: Dict[str, Any] = {'progress': {}, 'status': {}, 'meta': 0, 'rawmeta': 0}
+    for video in context.lives.values():
+        counters['status'][video.status] = counters['status'].setdefault(video.status, 0) + 1
+        counters['progress'][video.progress] = counters['progress'].setdefault(video.progress, 0) + 1
+        counters['meta'] += (video.meta is not None)
+        counters['rawmeta'] += (video.rawmeta is not None)
+
+    print("video states:")
+    for status, count in counters['status'].items():
+        print(f"  number with video state {status}:", count)
+
+    print("progress states:")
+    for progress, count in counters['progress'].items():
+        print(f"  number with progress state {progress}:", count)
+
+    print("number of meta objects:", counters['meta'])
+    print("number of rawmeta objects:", counters['rawmeta'])
+    print("number of tracked pid groups: " + str(len(context.pids)))
+
+    pid_count = 0
+    for video_id in context.pids:
+        (pypid, dlpid) = context.pids[video_id]
+
+        if check_pid(dlpid):
+            pid_count += 1
+
+    print("number of valid tracked pids: " + str(pid_count))
+    print(end='', flush=True)
 
 
 if __name__ == '__main__':

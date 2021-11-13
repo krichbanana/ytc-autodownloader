@@ -22,7 +22,7 @@ if [[ "$ecode" != 0 ]]; then
     echo "(channel scraper) warning: fetch for ${tmppre}.501 exited with error: $ecode" >&2
 fi
 # Extract url fields from a flat playlist
-jq -r <"${tmppre}.501" .url > "${tmppre}.501.url"
+jq -r <"${tmppre}.501" 'select(.id != null)|.id' > "${tmppre}.501.url"
 # 5 is arbitrary threshhold
 if [[ "$(wc -l "${tmppre}.501.url" | cut -d ' ' -f 1)" -lt 5 ]]; then
     # likely not redirected
@@ -35,7 +35,7 @@ ecode=$?
 if [[ "$ecode" != 0 ]]; then
     echo "(channel scraper) warning: fetch for ${tmppre}.502 exited with error: $ecode" >&2
 fi
-jq -r <"${tmppre}.502" .url > "${tmppre}.502.url"
+jq -r <"${tmppre}.502" 'select(.id != null)|.id' > "${tmppre}.502.url"
 if [[ "$(wc -l "${tmppre}.502.url" | cut -d ' ' -f 1)" -lt 5 ]]; then
     # likely not redirected
     cat "${tmppre}.502.url" >>"${tmppre}.url"
@@ -48,7 +48,7 @@ ecode=$?
 if [[ "$ecode" != 0 ]]; then
     echo "(channel scraper) warning: fetch for ${tmppre}.57 exited with error: $ecode" >&2
 fi
-jq -r <"${tmppre}.57" .url > "${tmppre}.57.url"
+jq -r <"${tmppre}.57" 'select(.id != null)|.id' > "${tmppre}.57.url"
 
 if [[ ! -f "${tmppre}.url" ]]; then
     echo "(channel scraper) there doesn't seem to be any live or upcoming livestreams"
