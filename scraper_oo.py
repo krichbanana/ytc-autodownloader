@@ -55,38 +55,12 @@ watchdogprog = "../watchdog.sh"
 holoscrapecmd = 'wget -nv --load-cookies=../cookies-schedule-hololive-tv.txt https://schedule.hololive.tv/lives -O auto-lives_tz'
 
 
-def get_timestamp_now():
-    return dt.datetime.utcnow().timestamp()
-
-
-class AutoScraper:
-    """ Main context storing videos and other info """
-    LAYOUT_VERSION = 1
-
-    def __init__(self):
-        self.lives = {}
-        self.channels = {}
-        self.events = {}
-        self.pids = {}
-        self.general_stats = {}  # for debugging
-        self.init_timestamp = get_timestamp_now()
-
-    def get_or_init_video(self, video_id):
-        video = None
-        if video_id not in self.lives:
-            video = Video(video_id)
-            self.lives[video_id] = video
-        else:
-            video = self.lives[video_id]
-
-        return video
-
-
-main_autoscraper = AutoScraper()
-
-
 statuses = frozenset(['unknown', 'prelive', 'live', 'postlive', 'upload', 'error'])
 progress_statuses = frozenset(['unscraped', 'waiting', 'downloading', 'downloaded', 'missed', 'invalid', 'aborted'])
+
+
+def get_timestamp_now():
+    return dt.datetime.utcnow().timestamp()
 
 
 class TransitionException(Exception):
@@ -297,6 +271,379 @@ class Channel:
         self.batch = set()
 
 
+class AutoScraper:
+    """ Main context storing videos and other info """
+    LAYOUT_VERSION = 1
+
+    def __init__(self):
+        self.lives = {}
+        self.channels = {}
+        self.events = {}
+        self.pids = {}
+        self.general_stats = {}  # for debugging
+        self.init_timestamp = get_timestamp_now()
+
+    def get_or_init_video(self, /, video_id):
+        video = None
+        if video_id not in self.lives:
+            video = Video(video_id)
+            self.lives[video_id] = video
+        else:
+            video = self.lives[video_id]
+
+        return video
+
+    def update_lives_status(self, /):
+        with open("discovery.txt", "a") as dlog:
+            try:
+                self.update_lives_status_holoschedule(dlog=dlog)
+            except Exception:
+                print("warning: exception during holoschedule scrape. Network error?")
+                traceback.print_exc()
+
+            try:
+                self.update_lives_status_urllist(dlog=dlog)
+            except Exception:
+                print("warning: exception during urllist scrape. Network error?")
+                traceback.print_exc()
+
+            try:
+                self.update_lives_status_channellist(dlog=dlog)
+            except Exception:
+                print("warning: exception during channellist scrape. Network error?")
+                traceback.print_exc()
+
+    def update_lives_status_holoschedule(self, /, *, dlog: IO = None) -> None:
+        """ Process the holoschedule, which updates on a short delay. """
+        # Find all valid hyperlinks to youtube videos
+        soup = get_hololivetv_html()
+        newlives = 0
+        knownlives = 0
+
+        if dlog is None:
+            dlog = sys.stdout
+
+        for link in soup.find_all('a'):
+            # Extract any link
+            href = link.get('href')
+            video_id = extract_video_id_from_yturl(href, strict=True)
+
+            if video_id is None:
+                continue
+
+            if video_id not in self.lives:
+                recall_video(video_id, context=self, filter_progress=True)
+
+            video = self.get_or_init_video(video_id)
+            if video.progress == 'unscraped':
+                print("discovery: new live listed:", video_id, file=dlog, flush=True)
+                newlives += 1
+            else:
+                # known (not new) live listed
+                knownlives += 1
+
+        print("discovery: holoschedule: new lives:", str(newlives))
+        print("discovery: holoschedule: known lives:", str(knownlives))
+
+    def update_lives_status_urllist(self, *, dlog: IO = None):
+        """ Process a url file (TODO).
+            Can be called standalone.
+        """
+        # TODO
+        pass
+
+    def update_lives_status_channellist(self, *, dlog: IO = None) -> None:
+        """ Read channels.txt for a list of channel IDs to process. """
+        if dlog is None:
+            dlog = sys.stdout
+
+        try:
+            if os.path.exists(channelsfile):
+                with open(channelsfile) as channellist:
+                    for channel_id in [x.strip().split()[0] for x in channellist.readlines()]:
+                        self.scrape_and_process_channel(channel_id=channel_id, dlog=dlog)
+
+        except Exception:
+            print("warning: unexpected error with processing channels.txt", file=sys.stderr)
+            traceback.print_exc()
+
+    # TODO: rewrite
+    def process_channel_videos_ytdlp(self, /, channel: Channel, *, dlog):
+        """ Read scraped channel video list, proccess each video ID, and persist the meta state. """
+        newlives = 0
+        knownlives = 0
+        numignores: Dict = {}
+        channel_id = channel.channel_id
+        channel.did_discovery_print = True
+
+        channel.start_batch()
+
+        try:
+            with open("channel-cached/" + channel_id + ".url.all") as urls:
+                for video_id in [f.split(" ")[1].strip() for f in urls.readlines()]:
+                    # Process each recent video
+                    if video_id not in self.lives:
+                        recall_video(video_id, context=self, filter_progress=True)
+
+                    video = self.lives[video_id]
+                    channel.add_video(video)
+
+                    if not channel.did_discovery_print:
+                        print("discovery: new live listed: " + video_id + " on channel " + channel_id, file=dlog, flush=True)
+                        # TODO: accumulate multiple videos at once.
+                        channel.did_discovery_print = True
+                        newlives += 1
+                    else:
+                        # known (not new) live listed (channel unaware)
+                        knownlives += 1
+
+                    saved_progress = video.progress
+
+                    if not FORCE_RESCRAPE and saved_progress in {'downloaded', 'missed', 'invalid', 'aborted'}:
+                        numignores[saved_progress] = numignores.setdefault(saved_progress, 0) + 1
+
+                        delete_ytmeta_raw(video, context=self, suffix=" (channel)")
+
+                        continue
+
+                    cache_miss = False
+
+                    # process precached meta
+                    if video.meta is None:
+                        # We may be reloading old URLs after a program restart
+                        print("ytmeta cache miss for video " + video_id + " on channel " + channel_id)
+                        cache_miss = True
+                        rescrape(video)
+                        if video.meta is None:
+                            # scrape failed
+                            continue
+                        video.rawmeta = video.meta.get('raw')
+                        video.did_meta_flush = False
+                        video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin, after cache miss)'
+
+                    # There's an optimization opportunity for reducing disk flushes here, but we forego it
+
+                    # has parity with maybe_rescrape(); should only need to be called on new videos
+                    if video.progress == 'unscraped':
+                        process_ytmeta(video)
+
+                    # has parity with maybe_rescrape() as well
+                    if cache_miss or (saved_progress not in {'missed', 'invalid'} and saved_progress != video.progress):
+                        persist_meta(video, context=self, fresh=True)
+
+                    if not video.did_meta_flush:
+                        print("warning: didn't flush meta for channel video; flushing now", file=sys.stderr)
+                        persist_ytmeta(video, fresh=True)
+
+        except IOError:
+            print("warning: unexpected I/O error when processing channel scrape results", file=sys.stderr)
+            traceback.print_exc()
+
+        channel.end_batch()
+
+        if len(channel.batch) > 0:
+            print("discovery: channels list: new lives on channel " + channel_id + " : " + str(newlives))
+            print("discovery: channels list: known lives on channel " + channel_id + " : " + str(knownlives))
+            for progress, count in numignores.items():
+                print("discovery: channels list: skipped ytmeta fetches on channel " + channel_id + " : " + str(count) + " skipped due to progress state '" + progress + "'")
+
+        channel.clear_batch()
+
+    def scrape_and_process_channel(self, channel_id, *, dlog: IO = None) -> None:
+        """ Scrape a channel, with fallbacks.
+            Can be called standalone.
+        """
+        channel = None
+        use_ytdlp = False
+
+        if dlog is None:
+            dlog = sys.stdout
+
+        if channel_id in self.channels:
+            channel = self.channels[channel_id]
+        else:
+            channel = Channel(channel_id)
+            self.channels[channel_id] = channel
+            # use chat_downloader to get initial video list
+            print("New channel: " + channel.channel_id)
+
+        if not use_ytdlp:
+            try:
+                self.scrape_and_process_channel_chatdownloader(channel, dlog=dlog)
+            except Exception:
+                print("failed to scrape channel list with chat_downloader:", channel_id, file=sys.stderr)
+                traceback.print_exc()
+                use_ytdlp = True
+
+        if use_ytdlp:
+            self.invoke_channel_scraper_ytdlp(channel)
+            self.process_channel_videos_ytdlp(channel, dlog=dlog)
+
+        # Scrape community tab page for links (esp. member stream links)
+        # Currently only try this when cookies are provided.
+        # TODO: use membership page instead, since it only includes (recent?) member videos and posts.
+        # I believe this is a new feature by YouTube (~Nov 2021).
+        if os.path.exists(channel_id + ".txt"):
+            self.invoke_channel_scraper_ytdlp(channel, community_scrape=True)
+            self.process_channel_videos_ytdlp(channel, dlog=dlog)
+
+    def scrape_and_process_channel_chatdownloader(self, /, channel: Channel, *, dlog: IO = None):
+        """ Use chat_downloader's get_user_videos() to quickly get channel videos and live statuses. """
+        if dlog is None:
+            dlog = sys.stdout
+
+        downloader = ChatDownloader()
+
+        # Forcefully create a YouTube session
+        youtube: YouTubeChatDownloader = downloader.create_session(YouTubeChatDownloader)
+
+        limit = CHANNEL_SCRAPE_LIMIT
+        count = 0
+        perpage_count = 0
+        valid_count = 0
+        skipped = 0
+
+        seen_vids: Set[str] = set()
+        lives = self.lives
+
+        # We don't just check 'all' since the list used may be slow to update.
+        for video_status in ['upcoming', 'live', 'all']:
+            perpage_count = 0
+            time.sleep(0.1)
+            for basic_video_details in youtube.get_user_videos(channel_id=channel.channel_id, video_status=video_status, params={'max_attempts': 3}):
+                status = 'unknown'
+                status_hint: Optional[str] = None
+                just_scraped = False
+
+                video_id = basic_video_details.get('video_id')
+
+                try:
+                    status_hint = basic_video_details['view_count'].split()[1]
+                    if status_hint == "waiting":
+                        status = 'prelive'
+                    elif status_hint == "watching":
+                        status = 'live'
+                    elif status_hint == "views":
+                        pass
+                    else:
+                        print(f"warning: could not understand status hint ({status_hint = })", file=sys.stderr)
+                        raise RuntimeError('could not extract status hint')
+
+                except KeyError:
+                    if video_id is not None and video_id in lives and lives[video_id].progress not in {'unscraped', 'aborted'} and lives[video_id].status not in {'postlive', 'upload'}:
+                        print(f"warning: status hint extraction: unexpected KeyError... {count = } {perpage_count = } (+1) ... {valid_count = } {skipped = } {limit = } ... {seen_vids = } ... {basic_video_details = })", file=sys.stderr)
+                        traceback.print_exc()
+                    elif video_id not in lives:
+                        video = self.get_or_init_video(video_id)
+                        print(f"warning: status hint extraction: no status hint and new video, doing direct video scrape: {video_id}", file=sys.stderr)
+                        rescrape_chatdownloader(video, channel=channel, youtube=youtube)
+                        just_scraped = True
+                        if video.meta is not None:
+                            live_status = video.meta.get('live_status')
+                            if live_status == 'is_upcoming':
+                                status = 'prelive'
+                            elif live_status == 'is_live':
+                                status = 'live'
+                    else:
+                        # 'waiting' may be hidden on the player response page (possibly a server bug, but could also be intentional)
+                        print(f"warning: status hint extraction: unexpected KeyError, already scraped, not live... {basic_video_details = })", file=sys.stderr)
+
+                except Exception:
+                    print("warning: could not extract status hint", file=sys.stderr)
+                    raise
+
+                perpage_count += 1
+                if perpage_count >= limit:
+                    if video_id in seen_vids or status == 'unknown' or (video_id in lives and lives[video_id].progress != 'unscraped'):
+                        # would continue
+                        print(f"perpage limit of {limit} reached:", video_status)
+                        if video_id not in seen_vids:
+                            count += 1
+                        if status != 'unknown' and not (video_id in lives and lives[video_id].progress != 'unscraped'):
+                            skipped += 1
+                        break
+
+                if video_id in seen_vids:
+                    continue
+                else:
+                    count += 1
+
+                if status == 'unknown':
+                    # ignore past streams/uploads
+                    continue
+
+                valid_count += 1
+
+                if video_id in lives and lives[video_id].progress != 'unscraped':
+                    skipped += 1
+                    continue
+
+                if status != 'unknown':
+                    print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}): " + video_id, file=sys.stdout, flush=True)
+                    print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}): " + video_id, file=dlog, flush=True)
+
+                video = self.get_or_init_video(video_id)
+
+                channel.add_video(video)
+
+                # rescrape and process a new video
+                if not just_scraped:
+                    rescrape_chatdownloader(video, channel=channel, youtube=youtube)
+
+                persist_meta(video, context=self, fresh=True, clobber_pid=False)
+
+                if perpage_count >= limit:
+                    print(f"perpage limit of {limit} reached:", video_status)
+                    break
+
+            if count >= limit * 3:
+                print(f"limit of {limit} reached")
+                break
+
+        print(f"discovery: channels list (via chat_downloader): channel {channel.channel_id} new upcoming/live lives: " + str(valid_count) + "/" + str(count) + " (" + str(skipped) + " known)")
+
+    def invoke_channel_scraper_ytdlp(self, /, channel: Channel, *, community_scrape=False):
+        """ Scrape the channel for latest videos and batch-fetch meta state. """
+        # Note: some arbitrary limits are set in the helper program that may need tweaking.
+        if not community_scrape:
+            print("Scraping channel " + channel.channel_id)
+            subprocess.run(channelscrapecmd + " " + channel.channel_id, shell=True)
+        else:
+            print("Scraping channel community pages " + channel.channel_id)
+            subprocess.run(channelpostscrapecmd + " " + channel.channel_id, shell=True)
+
+        with open("channel-cached/" + channel.channel_id + ".meta.new") as allmeta:
+            metalist = []
+
+            for jsonres in allmeta.readlines():
+                try:
+                    metalist.append(populate_meta_fields_ytdlp(json.loads(jsonres)))
+                except Exception:
+                    if community_scrape:
+                        print("warning: exception in channel post scrape task (corrupt meta?)", file=sys.stderr)
+                    else:
+                        print("warning: exception in channel scrape task (corrupt meta?)", file=sys.stderr)
+                    traceback.print_exc()
+
+            for ytmeta in metalist:
+                video_id = ytmeta["id"]
+                recall_video(video_id, context=self, filter_progress=True)
+                video = self.lives.get(video_id)
+                if video and video.meta is None:
+                    video.meta = ytmeta
+                    video.rawmeta = ytmeta.get('raw')
+                    video.did_meta_flush = False
+                    video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin)'
+                else:
+                    if community_scrape:
+                        print("ignoring ytmeta from channel post scrape")
+                    else:
+                        print("ignoring ytmeta from channel scrape")
+
+
+main_autoscraper = AutoScraper()
+
+
 # video statuses:
 # unknown: not yet scraped
 # prelive: scheduled live
@@ -355,129 +702,13 @@ def get_hololivetv_html():
     return soup
 
 
-def update_lives_status(*, context: AutoScraper):
-    with open("discovery.txt", "a") as dlog:
-        try:
-            update_lives_status_holoschedule(context=context, dlog=dlog)
-        except Exception:
-            print("warning: exception during holoschedule scrape. Network error?")
-            traceback.print_exc()
-
-        try:
-            update_lives_status_urllist(context=context, dlog=dlog)
-        except Exception:
-            print("warning: exception during urllist scrape. Network error?")
-            traceback.print_exc()
-
-        try:
-            update_lives_status_channellist(context=context, dlog=dlog)
-        except Exception:
-            print("warning: exception during channellist scrape. Network error?")
-            traceback.print_exc()
-
-
-def update_lives_status_holoschedule(*, context: AutoScraper, dlog: IO = None) -> None:
-    """ Process the holoschedule, which updates on a short delay. """
-    # Find all valid hyperlinks to youtube videos
-    soup = get_hololivetv_html()
-    newlives = 0
-    knownlives = 0
-
-    if dlog is None:
-        dlog = sys.stdout
-
-    for link in soup.find_all('a'):
-        # Extract any link
-        href = link.get('href')
-        video_id = extract_video_id_from_yturl(href, strict=True)
-
-        if video_id is None:
-            continue
-
-        if video_id not in context.lives:
-            recall_video(video_id, context=context, filter_progress=True)
-
-        video = context.get_or_init_video(video_id)
-        if video.progress == 'unscraped':
-            print("discovery: new live listed:", video_id, file=dlog, flush=True)
-            newlives += 1
-        else:
-            # known (not new) live listed
-            knownlives += 1
-
-    print("discovery: holoschedule: new lives:", str(newlives))
-    print("discovery: holoschedule: known lives:", str(knownlives))
-
-
-def update_lives_status_urllist(*, context: AutoScraper = None, dlog: IO = None):
-    """ Process a url file (TODO).
-        Can be called standalone.
+def rescrape_chatdownloader(video: Video, *, channel=None, youtube=None, cookies=None) -> None:
+    """ rescrape_ytdlp, but using chat_downloader
+        Interpret yt-dlp rawmeta.
+        Populates meta fields.
     """
-    # TODO
-    pass
-
-
-def scrape_and_process_channel(channel_id, *, context: AutoScraper, dlog: IO = None) -> None:
-    """ Scrape a channel, with fallbacks.
-        Can be called standalone.
-    """
-    channel = None
-    use_ytdlp = False
-
-    if dlog is None:
-        dlog = sys.stdout
-
-    if channel_id in context.channels:
-        channel = context.channels[channel_id]
-    else:
-        channel = Channel(channel_id)
-        context.channels[channel_id] = channel
-        # use chat_downloader to get initial video list
-        print("New channel: " + channel.channel_id)
-
-    if not use_ytdlp:
-        try:
-            scrape_and_process_channel_chatdownloader(channel, context=context, dlog=dlog)
-        except Exception:
-            print("failed to scrape channel list with chat_downloader:", channel_id, file=sys.stderr)
-            traceback.print_exc()
-            use_ytdlp = True
-
-    if use_ytdlp:
-        invoke_channel_scraper(channel, context=context)
-        process_channel_videos(channel, context=context, dlog=dlog)
-
-    # Scrape community tab page for links (esp. member stream links)
-    # Currently only try this when cookies are provided.
-    # TODO: use membership page instead, since it only includes (recent?) member videos and posts.
-    # I believe this is a new feature by YouTube (~Nov 2021).
-    if os.path.exists(channel_id + ".txt"):
-        invoke_channel_scraper(channel, context=context, community_scrape=True)
-        process_channel_videos(channel, context=context, dlog=dlog)
-
-
-def update_lives_status_channellist(*, context: AutoScraper, dlog: IO = None) -> None:
-    """ Read channels.txt for a list of channel IDs to process. """
-    if dlog is None:
-        dlog = sys.stdout
-
-    try:
-        if os.path.exists(channelsfile):
-            with open(channelsfile) as channellist:
-                for channel_id in [x.strip().split()[0] for x in channellist.readlines()]:
-                    scrape_and_process_channel(channel_id=channel_id, context=context, dlog=dlog)
-
-    except Exception:
-        print("warning: unexpected error with processing channels.txt", file=sys.stderr)
-        traceback.print_exc()
-
-
-def rescrape_chatdownloader(video: Video, *, channel=None, youtube=None, cookies=None):
-    """ rescrape_ytdlp, but using chat_downloader """
     video_id = video.video_id
     video_data, player_response, status = invoke_scraper_chatdownloader(video_id, youtube=youtube, skip_status=False, cookies=cookies)
-    microformat = player_response['microformat']['playerMicroformatRenderer']
-    video_details = player_response['videoDetails']
 
     # keep only known useful fields, junk spam/useless fields
     old_player_response = player_response
@@ -487,6 +718,45 @@ def rescrape_chatdownloader(video: Video, *, channel=None, youtube=None, cookies
     for key in ['streamingData']:
         player_response[key] = old_player_response.get(key)
     del old_player_response
+
+    meta = populate_meta_fields_chatdownloader(player_response=player_response, video_data=video_data, channel=channel, video_id=video_id)
+
+    video.set_status(status)
+
+    video.did_meta_flush = False
+    word = None
+    if video.meta is None:
+        word = 'new'
+    else:
+        word = 'updated'
+    if channel is None:
+        video.meta_flush_reason = f'{word} meta (chat_downloader source, unspecified task origin)'
+    else:
+        video.meta_flush_reason = f'{word} meta (chat_downloader source, channel task origin)'
+    del word
+
+    video.meta = meta
+    rawmeta = meta.get('raw')
+    if not rawmeta:
+        # Note: rawmeta may be older than meta, but it's better than being lost.
+        if video.progress not in {'downloading', 'downloaded', 'missed'}:
+            video.set_progress('aborted')
+    else:
+        video.rawmeta = rawmeta
+    video.meta_timestamp = get_timestamp_now()
+
+    try:
+        del meta['raw']
+    except KeyError:
+        pass
+
+
+def populate_meta_fields_chatdownloader(*, player_response: Dict[str, Any], video_data: Dict[str, Any], channel: Channel = None, video_id: str) -> Dict[str, Any]:
+    """ Interpret chat_downloader rawmeta.
+        Populates meta fields.
+    """
+    microformat = player_response['microformat']['playerMicroformatRenderer']
+    video_details = player_response['videoDetails']
 
     # "export" the fields manually here
     meta: Dict[str, Any] = {}
@@ -524,34 +794,7 @@ def rescrape_chatdownloader(video: Video, *, channel=None, youtube=None, cookies
     else:
         meta['live_status'] = 'not_live'
 
-    video.set_status(status)
-
-    video.did_meta_flush = False
-    word = None
-    if video.meta is None:
-        word = 'new'
-    else:
-        word = 'updated'
-    if channel is None:
-        video.meta_flush_reason = f'{word} meta (chat_downloader source, unspecified task origin)'
-    else:
-        video.meta_flush_reason = f'{word} meta (chat_downloader source, channel task origin)'
-    del word
-
-    video.meta = meta
-    rawmeta = meta.get('raw')
-    if not rawmeta:
-        # Note: rawmeta may be older than meta, but it's better than being lost.
-        if video.progress not in {'downloading', 'downloaded', 'missed'}:
-            video.set_progress('aborted')
-    else:
-        video.rawmeta = rawmeta
-    video.meta_timestamp = get_timestamp_now()
-
-    try:
-        del meta['raw']
-    except KeyError:
-        pass
+    return meta
 
 
 def invoke_scraper_chatdownloader(video_id: str, *, youtube=None, skip_status=False, cookies=None):
@@ -584,251 +827,13 @@ def invoke_scraper_chatdownloader(video_id: str, *, youtube=None, skip_status=Fa
     return video_data, player_response, scraper_status
 
 
-def scrape_and_process_channel_chatdownloader(channel: Channel, *, context: AutoScraper, dlog: IO = None):
-    """ Use chat_downloader's get_user_videos() to quickly get channel videos and live statuses. """
-    if dlog is None:
-        dlog = sys.stdout
-
-    downloader = ChatDownloader()
-
-    # Forcefully create a YouTube session
-    youtube: YouTubeChatDownloader = downloader.create_session(YouTubeChatDownloader)
-
-    limit = CHANNEL_SCRAPE_LIMIT
-    count = 0
-    perpage_count = 0
-    valid_count = 0
-    skipped = 0
-
-    seen_vids: Set[str] = set()
-    lives = context.lives
-
-    # We don't just check 'all' since the list used may be slow to update.
-    for video_status in ['upcoming', 'live', 'all']:
-        perpage_count = 0
-        time.sleep(0.1)
-        for basic_video_details in youtube.get_user_videos(channel_id=channel.channel_id, video_status=video_status, params={'max_attempts': 3}):
-            status = 'unknown'
-            status_hint: Optional[str] = None
-            just_scraped = False
-
-            video_id = basic_video_details.get('video_id')
-
-            try:
-                status_hint = basic_video_details['view_count'].split()[1]
-                if status_hint == "waiting":
-                    status = 'prelive'
-                elif status_hint == "watching":
-                    status = 'live'
-                elif status_hint == "views":
-                    pass
-                else:
-                    print(f"warning: could not understand status hint ({status_hint = })", file=sys.stderr)
-                    raise RuntimeError('could not extract status hint')
-
-            except KeyError:
-                if video_id is not None and video_id in lives and lives[video_id].progress not in {'unscraped', 'aborted'} and lives[video_id].status not in {'postlive', 'upload'}:
-                    print(f"warning: status hint extraction: unexpected KeyError... {count = } {perpage_count = } (+1) ... {valid_count = } {skipped = } {limit = } ... {seen_vids = } ... {basic_video_details = })", file=sys.stderr)
-                    traceback.print_exc()
-                elif video_id not in lives:
-                    video = context.get_or_init_video(video_id)
-                    print(f"warning: status hint extraction: no status hint and new video, doing direct video scrape: {video_id}", file=sys.stderr)
-                    rescrape_chatdownloader(video, channel=channel, youtube=youtube)
-                    just_scraped = True
-                    if video.meta is not None:
-                        live_status = video.meta.get('live_status')
-                        if live_status == 'is_upcoming':
-                            status = 'prelive'
-                        elif live_status == 'is_live':
-                            status = 'live'
-                else:
-                    # 'waiting' may be hidden on the player response page (possibly a server bug, but could also be intentional)
-                    print(f"warning: status hint extraction: unexpected KeyError, already scraped, not live... {basic_video_details = })", file=sys.stderr)
-
-            except Exception:
-                print("warning: could not extract status hint", file=sys.stderr)
-                raise
-
-            perpage_count += 1
-            if perpage_count >= limit:
-                if video_id in seen_vids or status == 'unknown' or (video_id in lives and lives[video_id].progress != 'unscraped'):
-                    # would continue
-                    print(f"perpage limit of {limit} reached:", video_status)
-                    if video_id not in seen_vids:
-                        count += 1
-                    if status != 'unknown' and not (video_id in lives and lives[video_id].progress != 'unscraped'):
-                        skipped += 1
-                    break
-
-            if video_id in seen_vids:
-                continue
-            else:
-                count += 1
-
-            if status == 'unknown':
-                # ignore past streams/uploads
-                continue
-
-            valid_count += 1
-
-            if video_id in lives and lives[video_id].progress != 'unscraped':
-                skipped += 1
-                continue
-
-            if status != 'unknown':
-                print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}): " + video_id, file=sys.stdout, flush=True)
-                print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}): " + video_id, file=dlog, flush=True)
-
-            video = context.get_or_init_video(video_id)
-
-            channel.add_video(video)
-
-            # rescrape and process a new video
-            if not just_scraped:
-                rescrape_chatdownloader(video, channel=channel, youtube=youtube)
-
-            persist_meta(video, context=context, fresh=True, clobber_pid=False)
-
-            if perpage_count >= limit:
-                print(f"perpage limit of {limit} reached:", video_status)
-                break
-
-        if count >= limit * 3:
-            print(f"limit of {limit} reached")
-            break
-
-    print(f"discovery: channels list (via chat_downloader): channel {channel.channel_id} new upcoming/live lives: " + str(valid_count) + "/" + str(count) + " (" + str(skipped) + " known)")
-
-
-def invoke_channel_scraper(channel: Channel, *, context: AutoScraper, community_scrape=False):
-    """ Scrape the channel for latest videos and batch-fetch meta state. """
-    # Note: some arbitrary limits are set in the helper program that may need tweaking.
-    if not community_scrape:
-        print("Scraping channel " + channel.channel_id)
-        subprocess.run(channelscrapecmd + " " + channel.channel_id, shell=True)
-    else:
-        print("Scraping channel community pages " + channel.channel_id)
-        subprocess.run(channelpostscrapecmd + " " + channel.channel_id, shell=True)
-
-    with open("channel-cached/" + channel.channel_id + ".meta.new") as allmeta:
-        metalist = []
-
-        for jsonres in allmeta.readlines():
-            try:
-                metalist.append(export_scraped_fields_ytdlp(json.loads(jsonres)))
-            except Exception:
-                if community_scrape:
-                    print("warning: exception in channel post scrape task (corrupt meta?)", file=sys.stderr)
-                else:
-                    print("warning: exception in channel scrape task (corrupt meta?)", file=sys.stderr)
-                traceback.print_exc()
-
-        for ytmeta in metalist:
-            video_id = ytmeta["id"]
-            recall_video(video_id, context=context, filter_progress=True)
-            video = context.lives.get(video_id)
-            if video and video.meta is None:
-                video.meta = ytmeta
-                video.rawmeta = ytmeta.get('raw')
-                video.did_meta_flush = False
-                video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin)'
-            else:
-                if community_scrape:
-                    print("ignoring ytmeta from channel post scrape")
-                else:
-                    print("ignoring ytmeta from channel scrape")
-
-
-# TODO: rewrite
-def process_channel_videos(channel: Channel, *, context: AutoScraper, dlog):
-    """ Read scraped channel video list, proccess each video ID, and persist the meta state. """
-    newlives = 0
-    knownlives = 0
-    numignores: Dict = {}
-    channel_id = channel.channel_id
-    channel.did_discovery_print = True
-
-    channel.start_batch()
-
-    try:
-        with open("channel-cached/" + channel_id + ".url.all") as urls:
-            for video_id in [f.split(" ")[1].strip() for f in urls.readlines()]:
-                # Process each recent video
-                if video_id not in context.lives:
-                    recall_video(video_id, context=context, filter_progress=True)
-
-                video = context.lives[video_id]
-                channel.add_video(video)
-
-                if not channel.did_discovery_print:
-                    print("discovery: new live listed: " + video_id + " on channel " + channel_id, file=dlog, flush=True)
-                    # TODO: accumulate multiple videos at once.
-                    channel.did_discovery_print = True
-                    newlives += 1
-                else:
-                    # known (not new) live listed (channel unaware)
-                    knownlives += 1
-
-                saved_progress = video.progress
-
-                if not FORCE_RESCRAPE and saved_progress in {'downloaded', 'missed', 'invalid', 'aborted'}:
-                    numignores[saved_progress] = numignores.setdefault(saved_progress, 0) + 1
-
-                    delete_ytmeta_raw(video, context=context, suffix=" (channel)")
-
-                    continue
-
-                cache_miss = False
-
-                # process precached meta
-                if video.meta is None:
-                    # We may be reloading old URLs after a program restart
-                    print("ytmeta cache miss for video " + video_id + " on channel " + channel_id)
-                    cache_miss = True
-                    rescrape(video)
-                    if video.meta is None:
-                        # scrape failed
-                        continue
-                    video.rawmeta = video.meta.get('raw')
-                    video.did_meta_flush = False
-                    video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin, after cache miss)'
-
-                # There's an optimization opportunity for reducing disk flushes here, but we forego it
-
-                # has parity with maybe_rescrape(); should only need to be called on new videos
-                if video.progress == 'unscraped':
-                    process_ytmeta(video)
-
-                # has parity with maybe_rescrape() as well
-                if cache_miss or (saved_progress not in {'missed', 'invalid'} and saved_progress != video.progress):
-                    persist_meta(video, context=context, fresh=True)
-
-                if not video.did_meta_flush:
-                    print("warning: didn't flush meta for channel video; flushing now", file=sys.stderr)
-                    persist_ytmeta(video, fresh=True)
-
-    except IOError:
-        print("warning: unexpected I/O error when processing channel scrape results", file=sys.stderr)
-        traceback.print_exc()
-
-    channel.end_batch()
-
-    if len(channel.batch) > 0:
-        print("discovery: channels list: new lives on channel " + channel_id + " : " + str(newlives))
-        print("discovery: channels list: known lives on channel " + channel_id + " : " + str(knownlives))
-        for progress, count in numignores.items():
-            print("discovery: channels list: skipped ytmeta fetches on channel " + channel_id + " : " + str(count) + " skipped due to progress state '" + progress + "'")
-
-    channel.clear_batch()
-
-
 def persist_basic_state(video: Video, *, context: AutoScraper, clobber=True, clobber_pid=None):
     """ Write status and progress info to state file, flush pid; ytmeta is excluded """
     video_id = video.video_id
     statefile = 'by-video-id/' + video_id
     pidfile = 'pid/' + video_id
 
-    if not check_meta_persistence_enabled(video):
+    if not _check_meta_persistence_enabled(video):
         return
 
     state = {}
@@ -850,7 +855,7 @@ def persist_basic_state(video: Video, *, context: AutoScraper, clobber=True, clo
                 fp.write(str(context.pids[video_id][1]).encode())
 
 
-def check_meta_persistence_enabled(video: Video):
+def _check_meta_persistence_enabled(video: Video):
     """ Check if DISABLE_PERSISTENCE is set and run handling.
         Return true if it is not set.
     """
@@ -872,7 +877,7 @@ def check_meta_persistence_enabled(video: Video):
 
 def persist_meta(video: Video, *, context: AutoScraper, fresh=False, clobber=True, clobber_pid=None):
     """ Persist state and ytmeta at once. """
-    if not check_meta_persistence_enabled(video):
+    if not _check_meta_persistence_enabled(video):
         return
 
     persist_basic_state(video, context=context, clobber=clobber, clobber_pid=clobber_pid)
@@ -880,6 +885,7 @@ def persist_meta(video: Video, *, context: AutoScraper, fresh=False, clobber=Tru
 
 
 def persist_ytmeta(video: Video, *, fresh=False, clobber=True):
+    """ Persist ytmeta only. """
     metafile = 'by-video-id/' + video.video_id
 
     # Write ytmeta to a separate file (to avoid slurping large amounts of data)
@@ -951,6 +957,8 @@ def recall_video(video_id: str, *, context: AutoScraper, filter_progress=False):
     """ Read status, progress for video_id.
         If filter_progress is set to True, avoid ytmeta loads for certain progress states,
         unless unconditional rescraping is set.
+        meta['raw'] is moved to rawmeta if needed.
+        context: used for pid recall
     """
     # Not cached in memory, look for saved state.
     metafile = 'by-video-id/' + video_id
@@ -1019,6 +1027,7 @@ def recall_video(video_id: str, *, context: AutoScraper, filter_progress=False):
 
 
 def process_ytmeta(video: Video):
+    """ Set status, initial progress from meta """
     if video.meta is None:
         raise RuntimeError('precondition failed: called process_ytmeta but ytmeta for video ' + video.video_id + ' not found.')
 
@@ -1045,6 +1054,7 @@ def process_ytmeta(video: Video):
 
 
 def check_periodic_event(video: Video, *, context: AutoScraper):
+    """ Install or run periodic-rescrape handler for a video """
     try:
         if video.status == 'prelive':
             if (id(context.lives[video.video_id]) != id(video)):
@@ -1122,7 +1132,10 @@ def maybe_rescrape_initially(video: Video, *, context: AutoScraper):
         check_periodic_event(video, context=context)
 
 
-def export_scraped_fields_ytdlp(jsonres) -> Dict[str, Any]:
+def populate_meta_fields_ytdlp(jsonres) -> Dict[str, Any]:
+    """ Interpret yt-dlp rawmeta.
+        Populates meta fields.
+    """
     ytmeta: Dict[str, Any] = {}
     ytmeta['_scrape_provider'] = 'yt-dlp'
     ytmeta['raw'] = jsonres
@@ -1207,7 +1220,7 @@ def rescrape_ytdlp(video: Video) -> None:
 
         return None
 
-    meta = export_scraped_fields_ytdlp(jsonres)
+    meta = populate_meta_fields_ytdlp(jsonres)
     video.did_meta_flush = False
     if video.meta is None:
         video.meta_flush_reason = 'new meta (yt-dlp source, unspecified task origin)'
@@ -1776,7 +1789,7 @@ def main(context: AutoScraper):
     signal.signal(signal.SIGUSR2, handle_debug_signal)
 
     print("Updating lives status", flush=True)
-    update_lives_status(context=context)
+    context.update_lives_status()
 
     nowtimestamp = str(get_timestamp_now())
     with open("discovery.txt", "a") as dlog:
@@ -1875,7 +1888,7 @@ def main(context: AutoScraper):
             else:
                 time.sleep(SCRAPER_SLEEP_INTERVAL)
 
-            update_lives_status(context=context)
+            context.update_lives_status()
 
             # Try to make sure downloaders are tracked with correct state
             process_dlpid_queue(context=context)
