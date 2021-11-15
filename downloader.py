@@ -158,7 +158,7 @@ cookies_allowed = False
 
 
 def try_for_cookies(video_id=None, channel_id=None, allow_generic=True):
-    prefixes = ('', 'oo/', '../')
+    prefixes = ('', 'oo/', 'oo/cookies/', '../')
 
     candidates = []
     if video_id is not None:

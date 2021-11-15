@@ -21,7 +21,7 @@ readonly ytdlp_cmd="../yt-dlp/yt-dlp.sh"
 [[ -f cookies_ok.sh ]] && . cookies_ok.sh || cookies_ok() { return 0; }
 if ! cookies_ok; then
     cookies_ok=0
-    echo "cookies not safe to use, how are we going to get membership videos now?"
+    echo "cookies not safe to use, how are we going to get membership videos now?" >&2
     exit 1
 else
     cookies_ok=1
@@ -35,7 +35,7 @@ if [[ "$cookies_ok" == 1 ]]; then
         has_cookies=1
         cookie_file="cookies/${channelbase}.cookies"
     else
-        echo "cookies not found, how are we going to get membership videos now?"
+        echo "cookies not found, how are we going to get membership videos now?" >&2
         exit 1
     fi
 fi
@@ -57,11 +57,9 @@ echo "$next_time" >"$next_scrape_file"
 # Note that premieres will only show up here.
 url="https://www.youtube.com/channel/$channelbase$suf_membership"
 if ((has_cookies)); then
-    echo 'cookies used!'
-    echo "URL: $url"
     "$ytdlp_cmd" -s -q -j --cookies="$cookie_file" --sleep-requests 0.1 --ignore-no-formats-error --flat-playlist "$url" | grep -vF '/channel/' >"${tmppre}.membership"
 else
-    echo 'cookies not used!'
+    echo '(channel membership tab scraper) cookies not used!' >&2
     false
 fi
 ecode=$?
@@ -94,7 +92,7 @@ oldcnt="$(wc -l "channel-cached/${channelbase}.url.mem.all" | cut -d ' ' -f 1)"
 if test -s "${tmppre}.membership.url"; then
     "$ytdlp_cmd" -s -q -j --cookies="$cookie_file" --ignore-no-formats-error --force-write-archive --download-archive "channel-cached/${channelbase}.url.mem.all" --max-downloads 20 -a - < <(grep -vE '/channel/' "${tmppre}.membership.url") > "channel-cached/${channelbase}.meta.mem.new"
 else
-    echo "no urls... cookies_ok=${cookies_ok}"
+    echo "(channel membership tab scraper) no urls... cookies_ok=${cookies_ok}" >&2
 fi
 newcnt="$(wc -l "channel-cached/${channelbase}.url.mem.all" | cut -d ' ' -f 1)"
 echo "(channel membership tab scraper)" "${newcnt?} (+$((newcnt - oldcnt))) entries now in channel-cached/${channelbase}.url.mem.all"
