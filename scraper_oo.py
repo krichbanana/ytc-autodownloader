@@ -57,6 +57,7 @@ channelmemberscrapecmd = "../scrape_membership_tab.sh"
 mainchannelsfile = "./channels.txt"
 watchdogprog = "../watchdog.sh"
 holoscrapecmd = 'wget -nv --load-cookies=../cookies-schedule-hololive-tv.txt https://schedule.hololive.tv/lives -O auto-lives_tz'
+holoscrape_api_cmd = "wget -nv https://schedule.hololive.tv/api/list/1 -O - | jq '[.dateGroupList|.[]|.videoList|.[]|{datetime,isLive,platformType,url,title,name}|select(.platformType == 1)]' >| auto-lives_filt.json"
 
 
 statuses = frozenset(['unknown', 'prelive', 'live', 'postlive', 'upload', 'error'])
@@ -326,6 +327,12 @@ class AutoScraper:
                 traceback.print_exc()
 
             try:
+                self.update_lives_status_holoschedule_api(dlog=dlog)
+            except Exception:
+                print("warning: exception during holoschedule api fetch. Network error?")
+                traceback.print_exc()
+
+            try:
                 self.update_lives_status_urllist(dlog=dlog)
             except Exception:
                 print("warning: exception during urllist scrape. Network error?")
@@ -365,9 +372,11 @@ class AutoScraper:
             if video_id not in self.lives:
                 recall_video(video_id, context=self, filter_progress=True)
 
-            video = self.get_or_init_video(video_id, id_source='holoschedule')
+            video = self.get_or_init_video(video_id, id_source='holoschedule:html')
             if video.progress == 'unscraped':
-                print("discovery: new live listed:", video_id, file=dlog, flush=True)
+                print("discovery: (htmlscrape) new live listed:", video_id, file=dlog, flush=True)
+                if dlog != sys.stdout:
+                    print("discovery: (htmlscrape) new live listed:", video_id, file=sys.stdout, flush=True)
                 newlives += 1
             else:
                 # known (not new) live listed
@@ -375,6 +384,51 @@ class AutoScraper:
 
         print("discovery: holoschedule: new lives:", str(newlives))
         print("discovery: holoschedule: known lives:", str(knownlives))
+
+    def update_lives_status_holoschedule_api(self, /, *, dlog: IO = None) -> None:
+        jsonlist = get_hololivetv_api_json()
+        newlives = 0
+        knownlives = 0
+
+        if dlog is None:
+            dlog = sys.stdout
+
+        rescrape_queue = []
+
+        for video_info in jsonlist:
+            # Extract any link
+            url = video_info['url']
+            is_live = video_info['isLive']
+            video_id = extract_video_id_from_yturl(url, strict=True)
+
+            if video_id is None:
+                continue
+
+            if video_id not in self.lives:
+                recall_video(video_id, context=self, filter_progress=True)
+
+            video = self.get_or_init_video(video_id, id_source='holoschedule:api')
+            if video.progress == 'unscraped':
+                print("discovery: (api) new live listed:", video_id, file=dlog, flush=True)
+                if dlog != sys.stdout:
+                    print("discovery: (api) new live listed (live: {is_live}):", video_id, file=sys.stdout, flush=True)
+                newlives += 1
+            else:
+                # known (not new) live listed
+                knownlives += 1
+                if is_live and video.status == 'prelive':
+                    rescrape_queue.append(video)
+
+        for video in rescrape_queue:
+            if video.status == 'prelive':
+                # get the ytmeta as of the moment it went live.
+                print('holoschedule (api) update task: prelive video is said to be live, rescraping to update status:', video.video_id)
+                rescrape_chatdownloader(video)
+                # important, or else next recall_video() will revert the status!
+                persist_basic_state(video, context=self, clobber=True, clobber_pid=False)
+
+        print("discovery: holoschedule (api): new lives:", str(newlives))
+        print("discovery: holoschedule (api): known lives:", str(knownlives))
 
     def update_lives_status_urllist(self, *, dlog: IO = None):
         """ Process a url file (TODO).
@@ -667,11 +721,15 @@ class AutoScraper:
                 if not just_scraped:
                     rescrape_chatdownloader(video, channel=channel, youtube=youtube)
 
-                if video.status != status and status != 'unknown':
+                if (video.status != status or not video.did_status_print) and status not in ['unknown', 'aborted', 'prelive']:
                     # Note; this only covers manually added channels in channels.txt; holoschedule isn't covered (yet).
                     # Using the holoschedule JSON API will help with determinining if a video is live without having
                     # to add more channels to the channel scrape task (which hits YouTube a bit harder).
-                    print('status appears to have changed; rescraping:', video.video_id)
+                    if not video.did_status_print:
+                        print(f'status appears to have changed ({video.status_flush_reason}); rescraping:', video.video_id)
+                        video.did_status_print = True
+                    else:
+                        print(f'status appears to have changed ({video.status} -> {status}); rescraping:', video.video_id)
                     rescrape_chatdownloader(video, channel=channel, youtube=youtube)
 
                 persist_meta(video, context=self, fresh=True, clobber_pid=False)
@@ -794,6 +852,13 @@ def get_hololivetv_html():
         fp.write(soup.prettify().encode())
 
     return soup
+
+
+def get_hololivetv_api_json():
+    """ Get the latest JSON API result tied to the older site's schedule """
+    subprocess.run(holoscrape_api_cmd, shell=True)
+
+    return json.load(open('auto-lives_filt.json'))
 
 
 def rescrape_chatdownloader(video: Video, *, channel=None, youtube=None, cookies=None) -> None:
@@ -1605,6 +1670,14 @@ def _get_status_log():
 
 
 def process_one_status(video: Video, *, context: AutoScraper, first=False, just_invoked=False, force=False):
+    # Try to capture ytmeta changes
+    if not video.did_status_print:
+        print(f'remote status changed for video {video.video_id}:', video.status_flush_reason)
+        video.did_status_print = True
+
+        if video.status in ['live', 'postlive']:
+            rescrape_chatdownloader(video)
+
     # Process only on change
     if video.did_progress_print:
         if not force:
