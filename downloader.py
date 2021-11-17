@@ -320,7 +320,7 @@ def run_loop(outname, video_id, init_timestamp):
                 if is_live:
                     started = True
 
-                    print('(downloader) Downloading chat from live video:', video_id)
+                    print('(downloader) Downloading live chat from video:', video_id)
                     if paranoid_retry:
                         print("(downloader) warning: chat downloader exited too soon!", video_id, f"{num_msgs = }", file=sys.stderr)
                         retried = True
