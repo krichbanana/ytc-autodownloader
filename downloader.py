@@ -155,10 +155,15 @@ def write_status(final_status: str, video_id: str, init_timestamp, outfile: str)
 
 
 cookies_allowed = False
+cookies_warned = False
 
 
 def try_for_cookies(video_id=None, channel_id=None, allow_generic=True):
-    prefixes = ('', 'oo/', 'oo/cookies/', '../')
+    global cookies_warned
+    # written this way to prioritize cookies/
+    prefixes0 = ('', 'oo/', '../')
+    prefixes = [x + "cookies/" for x in prefixes0]
+    prefixes.extend(prefixes0)
 
     candidates = []
     if video_id is not None:
@@ -176,7 +181,10 @@ def try_for_cookies(video_id=None, channel_id=None, allow_generic=True):
     for path in candidates:
         if os.path.exists(path):
             if not cookies_allowed:
-                print('warning: cookies forbidden, rejecting found cookies', file=sys.stderr)
+                if not cookies_warned:
+                    print('warning: cookies forbidden, rejecting found cookies', file=sys.stderr)
+                    cookies_warned = True
+
                 return None
 
             return path
