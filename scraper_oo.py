@@ -409,9 +409,9 @@ class AutoScraper:
 
             video = self.get_or_init_video(video_id, id_source='holoschedule:api')
             if video.progress == 'unscraped':
-                print("discovery: (api) new live listed:", video_id, file=dlog, flush=True)
+                print("discovery: (api) new live listed (live: {is_live}):", video_id, file=dlog, flush=True)
                 if dlog != sys.stdout:
-                    print("discovery: (api) new live listed (live: {is_live}):", video_id, file=sys.stdout, flush=True)
+                    print(f"discovery: (api) new live listed (live: {is_live}):", video_id, file=sys.stdout, flush=True)
                 newlives += 1
             else:
                 # known (not new) live listed
@@ -872,15 +872,24 @@ def rescrape_chatdownloader(video: Video, *, channel=None, youtube=None, cookies
     # keep only known useful fields, junk spam/useless fields
     old_player_response = player_response
     player_response = {}
+    dubious_status = False
     for key in ['playabilityStatus', 'videoDetails', 'microformat']:
-        player_response[key] = old_player_response[key]
+        val = old_player_response.get(key)
+        if val is None:
+            print(f'warning: expected key \'{key}\' is missing for video {video.video_id}', file=sys.stderr)
+            dubious_status = True
+        else:
+            player_response[key] = val
     for key in ['streamingData']:
         player_response[key] = old_player_response.get(key)
     del old_player_response
 
     meta = populate_meta_fields_chatdownloader(player_response=player_response, video_data=video_data, channel=channel, video_id=video_id)
 
-    video.set_status(status)
+    if not dubious_status:
+        video.set_status(status)
+    else:
+        video.set_status('error')
 
     video.did_meta_flush = False
     word = None
@@ -1059,7 +1068,11 @@ def persist_ytmeta(video: Video, *, fresh=False, clobber=True):
         metafileyt = metafile + ".meta"
         metafileyt_status = metafileyt + "." + video.status
         if video.rawmeta is None:
-            metafileyt_status += ".simple"
+            if video.meta.get('title') is None or video.meta.get('uploader') is None:
+                # probably a failed scrape
+                metafileyt_status += ".incomplete"
+            else:
+                metafileyt_status += ".simple"
 
         try:
             if clobber or not os.path.exists(metafileyt):
@@ -1796,7 +1809,17 @@ def process_one_status(video: Video, *, context: AutoScraper, first=False, just_
                     pass
 
                 persist_basic_state(video, context=context)
+                # once more, for postlive ytmeta
+                rescrape_chatdownloader(video, youtube=youtube)
+                persist_meta(video, context=context, fresh=True, clobber=True)
                 delete_ytmeta_raw(video, context=context)
+
+                if video.status == 'error' and video.progress in ['unscraped', 'waiting', 'downloading']:
+                    if video.progress not in ['downloaded', 'aborted']:
+                        try:
+                            video.set_progress('downloaded')
+                        except TransitionException:
+                            video.set_progress('aborted')
 
     elif video.progress == 'downloaded':
         if first:
@@ -2008,6 +2031,10 @@ def alt_main(context: AutoScraper):
             print("doing scrape task. date:", dt.datetime.now())
             main_scrape_task(context=context)
 
+        except KeyError:
+            print("warning: internal inconsistency! squashing KeyError exception... (alt main)", file=sys.stderr)
+            traceback.print_exc()
+
         except KeyboardInterrupt:
             raise
 
@@ -2095,6 +2122,7 @@ def main(context: AutoScraper):
 
         except KeyError:
             print("warning: internal inconsistency! squashing KeyError exception...", file=sys.stderr)
+            traceback.print_exc()
 
         except KeyboardInterrupt:
             statuslog.flush()
@@ -2152,7 +2180,7 @@ def main_reexec_corruption_check(*, context):
 
 
 def main_initial_scrape_task(*, context):
-    """ Task for each iteration of the main loop, without added delay. """
+    """ Task run before the main loop starts"""
     # Populate cache from disk
     for video_id, video in context.lives.items():
         progress = video.progress
@@ -2176,7 +2204,7 @@ def main_initial_scrape_task(*, context):
 
 
 def main_scrape_task(*, context):
-    """ Task run before the main loop starts"""
+    """ Task for each iteration of the main loop, without added delay. """
     context.update_lives_status()
 
     # Try to make sure downloaders are tracked with correct state
@@ -2210,8 +2238,20 @@ def main_scrape_task(*, context):
                     process_one_status(video, context=context, force=True)
 
             except KeyError:
-                print(f"(loop check) video {video.video_id}: resetting progress after possible corruption (pid unknown!): {video.progress} -> unscraped")
-                video.reset_progress()
+                if video.status == 'error':
+                    print(f"(loop check) video {video.video_id}: pid unknown, and remote status reports error: {video.progress} -> aborted")
+                    if video.progress not in ['downloaded', 'aborted']:
+                        video.set_progress('aborted')
+                elif video.status not in ['postlive', 'upload']:
+                    print(f"(loop check) video {video.video_id}: resetting progress after possible corruption (pid unknown!): {video.progress} -> unscraped")
+                    video.reset_progress()
+                else:
+                    if video.progress not in ['downloaded', 'aborted']:
+                        try:
+                            video.set_progress('downloaded')
+                        except TransitionException:
+                            print(f"(loop check) video {video.video_id}: pid unknown with status '{video.status}', cancelling download: {video.progress} -> aborted")
+                            video.set_progress('aborted')
 
 
 def print_autoscraper_statistics(*, context: AutoScraper):
