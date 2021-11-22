@@ -98,14 +98,14 @@ def compress(filename):
 # errors/retries are considered external factors, even if they aren't
 
 
-def write_current_progress(curr_status: str, curr_progress: str, video_id: str, init_timestamp, outfile: str):
+def write_current_progress(*, curr_status, curr_progress: str, video_id: str, init_timestamp, outfile: str, msgcount):
     """ Called during the download for key events """
     fd = None
     try:
         fd = create_file_lock(f"by-video-id/{video_id}.lock")
         with open(f"by-video-id/{video_id}.dlprog", "a") as fp:
             curr_timestamp = dt.datetime.utcnow().timestamp()
-            res = {'init_timestamp': init_timestamp, 'curr_timestamp': curr_timestamp, 'curr_status': curr_status, 'curr_progress': curr_progress, 'outfile': outfile}
+            res = {'init_timestamp': init_timestamp, 'curr_timestamp': curr_timestamp, 'curr_status': curr_status, 'curr_progress': curr_progress, 'outfile': outfile, 'message_count': msgcount}
             fp.write(json.dumps(res))
     finally:
         if fd is not None:
@@ -126,14 +126,14 @@ def write_initial_progress(curr_progress: str, video_id: str, init_timestamp, ou
             remove_file_lock(fd)
 
 
-def write_final_progress(exit_cause: str, video_id: str, init_timestamp, outfile: str):
+def write_final_progress(exit_cause: str, video_id: str, init_timestamp, outfile: str, *, msgcount):
     """ Called when the downloader is about to exit """
     fd = None
     try:
         fd = create_file_lock(f"by-video-id/{video_id}.lock")
         with open(f"by-video-id/{video_id}.dlend", "a") as fp:
             final_timestamp = dt.datetime.utcnow().timestamp()
-            res = {'init_timestamp': init_timestamp, 'final_timestamp': final_timestamp, 'exit_cause': exit_cause, 'outfile': outfile}
+            res = {'init_timestamp': init_timestamp, 'final_timestamp': final_timestamp, 'exit_cause': exit_cause, 'outfile': outfile, 'message_count': msgcount}
             fp.write(json.dumps(res))
     finally:
         if fd is not None:
@@ -156,6 +156,7 @@ def write_status(final_status: str, video_id: str, init_timestamp, outfile: str)
 
 cookies_allowed = False
 cookies_warned = False
+message_count = 0
 
 
 def try_for_cookies(video_id=None, channel_id=None, allow_generic=True):
@@ -208,6 +209,7 @@ def run_loop(outname, video_id, init_timestamp):
     retried = False
     missed = False
     num_msgs = 0
+    global message_count
 
     output_file = f"{outname}.json"
     max_retries = 720   # 12 hours, with 60 second delays
@@ -231,6 +233,10 @@ def run_loop(outname, video_id, init_timestamp):
     # Forcefully create a YouTube session
     youtube = downloader.create_session(YouTubeChatDownloader)
 
+    last_progress = 'invoked'
+    progress = 'invoked'
+    ytstatus = 'unknown'
+
     try:
         details = youtube.get_video_data(video_id)
         is_live = details.get('status') in {'live', 'upcoming'}
@@ -242,6 +248,11 @@ def run_loop(outname, video_id, init_timestamp):
             print('title missing, will dump video details')
             print('(downloader) video_id:', video_id)
             print('(downloader)', details)
+        else:
+            ytstatus = details.get('status'), details.get('video_type')
+            progress = 'data-fetched'
+            write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+            last_progress = progress
 
         # No continuation? Possibly members-only.
         if details.get('continuation_info') == {} and cookies is None:
@@ -270,6 +281,10 @@ def run_loop(outname, video_id, init_timestamp):
                         aborted = True
 
                         break
+                else:
+                    progress = 'paranoid-retry'
+                    write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+                    last_progress = progress
 
                 # Retry members only video on new cookies immediately.
                 if not new_cookies:
@@ -292,6 +307,12 @@ def run_loop(outname, video_id, init_timestamp):
                     is_live = details.get('status') in {'live', 'upcoming'}
                     if retry:
                         print('(downloader) retry:', details.get('status'), details.get('video_type'), video_id)
+                        if progress != last_progress:
+                            # Don't compare this 'progress' at all, just for event logging. Else, we log each time... we may remove logging for this message in the future.
+                            progress = 'data-refetched'
+                            ytstatus = details.get('status'), details.get('video_type')
+                            write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+                            # don't update last_progress so that the body and exceptions can do that.
                     else:
                         print('(downloader) retry (paranoid):', details.get('status'), details.get('video_type'), video_id)
 
@@ -318,6 +339,17 @@ def run_loop(outname, video_id, init_timestamp):
                     pass
 
                 if is_live:
+                    if not started:
+                        progress = 'chat-download-started'
+                        if progress != last_progress:
+                            write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+                            last_progress = progress
+                    else:
+                        progress = 'chat-download-restarted'
+                        if progress != last_progress:
+                            write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+                            last_progress = progress
+
                     started = True
 
                     print('(downloader) Downloading live chat from video:', video_id)
@@ -329,6 +361,7 @@ def run_loop(outname, video_id, init_timestamp):
                     with open(f"{outname}.stdout", "a") as fp:
                         for message in chat:                        # iterate over messages
                             num_msgs += 1
+                            message_count = num_msgs
                             # print the formatted message
                             safe_print(chat.format(message), out=fp)
                             fp.flush()
@@ -341,6 +374,11 @@ def run_loop(outname, video_id, init_timestamp):
                         print('(downloader) Video is not live, ignoring:', video_id)
                         missed = True
 
+                        progress = 'exiting:missed'
+                        if progress != last_progress:
+                            write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+                            last_progress = progress
+
                     paranoid_retry = False
 
                     break
@@ -349,6 +387,10 @@ def run_loop(outname, video_id, init_timestamp):
                 if not paranoid_retry:
                     print('(downloader) Private video detected:', video_id)
                     private = True
+                    progress = 'retrywait:private'
+                    if progress != last_progress:
+                        write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+                        last_progress = progress
 
                 else:
                     break
@@ -365,7 +407,18 @@ def run_loop(outname, video_id, init_timestamp):
                         # One solution could be to pass cookies to every vid, but that can easily be tracked.
                         missed = True
 
+                        progress = 'exiting:member'
+                        if progress != last_progress:
+                            write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+                            last_progress = progress
+
                         break
+
+                    else:
+                        progress = 'retrywait:member'
+                        if progress != last_progress:
+                            write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+                            last_progress = progress
 
                 next_cookies = try_for_cookies(video_id=video_id, channel_id=channel_id)
                 new_cookies = False
@@ -393,7 +446,19 @@ def run_loop(outname, video_id, init_timestamp):
             except VideoUnavailable:
                 print('(downloader) Removed video detected, giving up:', video_id)
 
-                aborted = True
+                if not paranoid_retry:
+                    aborted = True
+
+                    progress = 'abort:removal'
+                    if progress != last_progress:
+                        write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+                        last_progress = progress
+
+                else:
+                    progress = 'exiting:removal'
+                    if progress != last_progress:
+                        write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+                        last_progress = progress
 
                 break
 
@@ -403,7 +468,18 @@ def run_loop(outname, video_id, init_timestamp):
                     # 1 week, 60 second intervals (might be longer if videos are rescheduled)
                     max_retries = max(max_retries, 10080)
 
+                    progress = 'retryloop:disabled'
+                    if progress != last_progress:
+                        write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+                        last_progress = progress
+
                 else:
+                    # we should reach "NoChatReplay" instead
+                    progress = 'exiting:disabled'
+                    if progress != last_progress:
+                        write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+                        last_progress = progress
+
                     break
 
             except NoChatReplay:
@@ -411,12 +487,28 @@ def run_loop(outname, video_id, init_timestamp):
                     print('(downloader) Video is not live, ignoring (no replay):', video_id)
                     missed = True
 
+                    progress = 'abort:noreplay'
+                    if progress != last_progress:
+                        write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+                        last_progress = progress
+
+                else:
+                    progress = 'exiting:noreplay'
+                    if progress != last_progress:
+                        write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+                        last_progress = progress
+
                 break
 
             except ChatDownloaderError as e:
                 print(f'(downloader) {e}:', video_id)
                 # 1 day, 60 second intervals
                 max_retries = max(max_retries, 1440)
+
+                progress = 'downloader-error'
+                if progress != last_progress:
+                    write_current_progress(curr_status=ytstatus, curr_progress=progress, video_id=video_id, init_timestamp=init_timestamp, outfile=outname, msgcount=message_count)
+                    last_progress = progress
 
             else:
                 retry = False
@@ -478,11 +570,11 @@ def main():
             write_initial_progress('invoked', video_id, init_timestamp, outname)
             run_loop("chat-logs/" + outname, video_id, init_timestamp)
         except Exception:
-            write_final_progress('crashed', video_id, init_timestamp, outname)
+            write_final_progress('crashed', video_id, init_timestamp, outname, msgcount=message_count)
             print(f"(downloader) fatal exception (pid = {os.getpid()}, ppid = {os.getppid()}, video_id = {video_id}, outname = {outname})")
             traceback.print_exc()
         else:
-            write_final_progress('finished', video_id, init_timestamp, outname)
+            write_final_progress('finished', video_id, init_timestamp, outname, msgcount=message_count)
 
     else:
         print("usage: {} '<outname>' '<video ID>'".format(sys.argv[0]))
