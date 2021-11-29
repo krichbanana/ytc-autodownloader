@@ -884,7 +884,11 @@ def rescrape_chatdownloader(video: Video, *, channel=None, youtube=None, cookies
         player_response[key] = old_player_response.get(key)
     del old_player_response
 
-    meta = populate_meta_fields_chatdownloader(player_response=player_response, video_data=video_data, channel=channel, video_id=video_id)
+    try:
+        meta = populate_meta_fields_chatdownloader(player_response=player_response, video_data=video_data, channel=channel, video_id=video_id)
+    except KeyError:
+        # potentially a memory leak
+        meta = {"_raw_player_response": player_response}
 
     if not dubious_status:
         video.set_status(status)
@@ -897,6 +901,13 @@ def rescrape_chatdownloader(video: Video, *, channel=None, youtube=None, cookies
         word = 'new'
     else:
         word = 'updated'
+        if video.meta == meta:
+            # this would be unlikely, since there should be timestamps involved.
+            word = 'redundant'
+    if meta.get('raw') is None:
+        word += " incomplete"
+    elif dubious_status:
+        word += " suspicious"
     if channel is None:
         video.meta_flush_reason = f'{word} meta (chat_downloader source, unspecified task origin)'
     else:
@@ -922,6 +933,7 @@ def rescrape_chatdownloader(video: Video, *, channel=None, youtube=None, cookies
 def populate_meta_fields_chatdownloader(*, player_response: Dict[str, Any], video_data: Dict[str, Any], channel: Channel = None, video_id: str) -> Dict[str, Any]:
     """ Interpret chat_downloader rawmeta.
         Populates meta fields.
+        May throw KeyError on private videos.
     """
     microformat = player_response['microformat']['playerMicroformatRenderer']
     video_details = player_response['videoDetails']
@@ -1665,6 +1677,18 @@ def _invoke_downloader_start(q, video_id, outfile):
 def delete_ytmeta_raw(video: Video, *, context: AutoScraper = None, suffix: str = None):
     """ Delete ytmeta['raw'] field that eats memory; count deletions """
     general_stats = getattr(context, 'general_stats', {})
+    if not video.did_meta_flush:
+        print(f'warning: attempting to clear rawmeta for video {video.video_id} without flushing, meta may be lost.', file=sys.stderr)
+
+    # unprocessable rawmeta gets saved here as a last resort; we don't want it loaded since it won't be used.
+    if video.meta and '_raw_player_response' in video.meta:
+        keyname = 'lastresort ytmeta del successes'
+        if suffix:
+            keyname = keyname + suffix
+        general_stats[keyname] = general_stats.setdefault(keyname, 0) + 1
+        del video.meta['_raw_player_response']
+
+    # FIXME: I don't see how a KeyError could raise?
     try:
         video.rawmeta = None
         keyname = 'ytmeta del successes'
