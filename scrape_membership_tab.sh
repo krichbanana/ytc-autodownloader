@@ -54,7 +54,7 @@ fi
 next_time=$((curr_time + (60*1)))  # 1 min throttle time
 echo "$next_time" >"$next_scrape_file"
 
-# Note that premieres will only show up here.
+# Note that if cookies are bad, a redirection may occur.
 url="https://www.youtube.com/channel/$channelbase$suf_membership"
 if ((has_cookies)); then
     "$ytdlp_cmd" -s -q -j --cookies="$cookie_file" --sleep-requests 0.1 --ignore-no-formats-error --flat-playlist "$url" | grep -vF '/channel/' >"${tmppre}.membership"
@@ -63,8 +63,12 @@ else
     false
 fi
 ecode=$?
+curr_time="$(date "+%s")"  # epoch time (seconds)
 if [[ "$ecode" != 0 ]]; then
     echo "(channel membership tab scraper) warning: fetch for ${tmppre}. exited with error: $ecode" >&2
+    echo "$curr_time" > "${channelbase}.mem.last_failure"
+else
+    echo "$curr_time" > "${channelbase}.mem.last_success"
 fi
 jq -r <"${tmppre}.membership" 'select(.id != null)|.id' > "${tmppre}.membership.url"
 
