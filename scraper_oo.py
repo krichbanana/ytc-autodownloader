@@ -486,7 +486,19 @@ class AutoScraper:
                     channel.add_video(video)
 
                     if not channel.did_discovery_print:
-                        print("discovery: new live listed: " + video_id + " on channel " + channel_id, file=dlog, flush=True)
+                        metastatus_ok = video.meta is not None
+                        if not metastatus_ok:
+                            if is_membership:
+                                word = 'member'
+                            else:
+                                word = 'main'
+                            recall_video(video_id, context=self, filter_progress=True, id_source=f'channel:urllist:{word}', referrer_channel_id=channel_id)
+                        metastatus_ok = video.meta is not None
+                        metafile_exists = getattr(video, 'metafile_exists', False)
+                        if metafile_exists:
+                            # avoid 'extra' rescrapes based on status
+                            video.did_status_print = True
+                        print(f"discovery: new live listed: {video_id} on channel {channel_id} (meta loaded: {metastatus_ok}; metafile exists: {metafile_exists})", file=dlog, flush=True)
                         # TODO: accumulate multiple videos at once.
                         channel.did_discovery_print = True
                         newlives += 1
@@ -499,36 +511,40 @@ class AutoScraper:
                     if not FORCE_RESCRAPE and saved_progress in {'downloaded', 'missed', 'invalid', 'aborted'}:
                         numignores[saved_progress] = numignores.setdefault(saved_progress, 0) + 1
 
+                        # meta likely won't be loaded for this to have too much effect, if filter_progress was set when recalling.
                         delete_ytmeta_raw(video, context=self, suffix=" (channel)")
 
                         continue
 
                     cache_miss = False
+                    metafile_exists = getattr(video, 'metafile_exists', False)
 
                     # process precached meta
                     if video.meta is None and not is_membership:
                         # We may be reloading old URLs after a program restart
-                        print("ytmeta cache miss for video " + video_id + " on channel " + channel_id)
-                        cache_miss = True
-                        rescrape(video)
-                        if video.meta is None:
-                            # scrape failed
-                            continue
-                        video.rawmeta = video.meta.get('raw')
-                        video.did_meta_flush = False
-                        video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin, after cache miss)'
+                        print(f'ytmeta cache miss for video {video_id} on channel {channel_id} ({metafile_exists = })')
+                        if not metafile_exists:
+                            cache_miss = True
+                            rescrape(video)
+                            if video.meta is None:
+                                # scrape failed
+                                continue
+                            video.rawmeta = video.meta.get('raw')
+                            video.did_meta_flush = False
+                            video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin, after cache miss)'
                     elif video.meta is None:
-                        print("ytmeta missing for member video " + video_id + " on channel " + channel_id)
-                        rescrape(video, cookies=_get_member_cookie_file(channel_id))
-                        if video.meta is None:
-                            if not video.did_meta_flush:
-                                print("warning: didn't flush meta for channel member video; flushing now", file=sys.stderr)
-                                persist_ytmeta(video, fresh=True)
-                            # scrape failed
-                            continue
-                        video.rawmeta = video.meta.get('raw')
-                        video.did_meta_flush = False
-                        video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin, after cache miss (cookied))'
+                        print(f'ytmeta missing for member video {video_id} on channel {channel_id} ({metafile_exists = })')
+                        if not metafile_exists:
+                            rescrape(video, cookies=_get_member_cookie_file(channel_id))
+                            if video.meta is None:
+                                if not video.did_meta_flush:
+                                    print("warning: didn't flush meta for channel member video; flushing now", file=sys.stderr)
+                                    persist_ytmeta(video, fresh=True)
+                                # scrape failed
+                                continue
+                            video.rawmeta = video.meta.get('raw')
+                            video.did_meta_flush = False
+                            video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin, after cache miss (cookied))'
 
                     # There's an optimization opportunity for reducing disk flushes here, but we forego it
 
@@ -781,16 +797,20 @@ class AutoScraper:
                 video_id = ytmeta["id"]
                 recall_video(video_id, context=self, filter_progress=True)
                 video = self.lives.get(video_id)
-                if video and video.meta is None:
+                metafile_exists = getattr(video, 'metafile_exists', False)
+                if video and video.meta is None and not metafile_exists:
+                    print(f'{metafile_exists = }')
                     video.meta = ytmeta
                     video.rawmeta = ytmeta.get('raw')
                     video.did_meta_flush = False
                     video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin)'
                 else:
-                    if community_scrape:
-                        print("ignoring ytmeta from channel post scrape")
+                    if community_scrape and not membership_scrape:
+                        print(f"ignoring ytmeta from channel community tab scrape (video = {video_id}, {metafile_exists = })")
+                    elif membership_scrape:
+                        print(f"ignoring ytmeta from channel membership tab scrape (video = {video_id}, {metafile_exists = })")
                     else:
-                        print("ignoring ytmeta from channel scrape")
+                        print(f"ignoring ytmeta from channel scrape (video = {video_id}, {metafile_exists = })")
 
 
 main_autoscraper = AutoScraper()
@@ -986,7 +1006,7 @@ def invoke_scraper_chatdownloader(video_id: str, *, youtube=None, skip_status=Fa
         downloader = ChatDownloader(cookies=cookies)
         youtube = downloader.create_session(YouTubeChatDownloader)
 
-    print(f'scraper chatdownloader: {video_id = } {cookies = }')
+    print(f'[scraper chatdownloader]: {video_id = } {cookies = }')
     video_data, player_response, *_ = youtube._parse_video_data(video_id, params={'max_attempts': 2})
 
     scraper_status: Optional[str] = None
@@ -1162,6 +1182,7 @@ def recall_video(video_id: str, *, context: AutoScraper, filter_progress=False, 
                 valid_meta = meta['status'] in statuses and meta['progress'] in progress_statuses
 
             except (json.decoder.JSONDecodeError, KeyError):
+                print(f'warning: program meta failed to load even though the file exists: {video_id}', file=sys.stderr)
                 valid_meta = False
 
         # Reduce memory usage by not loading ytmeta for undownloadable videos
@@ -1188,11 +1209,16 @@ def recall_video(video_id: str, *, context: AutoScraper, filter_progress=False, 
         video.status = meta['status']
         video.progress = meta['progress']
 
-        if valid_ytmeta and not should_ignore:
-            video.meta = typing.cast(Dict[str, Any], ytmeta['ytmeta'])
-            video.rawmeta = video.meta.get('raw')
-            if video.rawmeta is not None:
-                del video.meta['raw']
+        if valid_ytmeta:
+            if not should_ignore:
+                video.meta = typing.cast(Dict[str, Any], ytmeta['ytmeta'])
+                video.rawmeta = video.meta.get('raw')
+                if video.rawmeta is not None:
+                    del video.meta['raw']
+            else:
+                # Allows code that checks for meta to not rescrape if it is missing
+                # Note that this means the metafile isn't validated, which could be good or bad.
+                video.metafile_exists = True
 
         # unmigrated (monolithic file) format
         elif 'ytmeta' in meta:
@@ -1677,7 +1703,7 @@ def _invoke_downloader_start(q, video_id, outfile):
 def delete_ytmeta_raw(video: Video, *, context: AutoScraper = None, suffix: str = None):
     """ Delete ytmeta['raw'] field that eats memory; count deletions """
     general_stats = getattr(context, 'general_stats', {})
-    if not video.did_meta_flush:
+    if not video.did_meta_flush and video.meta is not None:
         print(f'warning: attempting to clear rawmeta for video {video.video_id} without flushing, meta may be lost.', file=sys.stderr)
 
     # unprocessable rawmeta gets saved here as a last resort; we don't want it loaded since it won't be used.
@@ -1712,8 +1738,10 @@ def process_one_status(video: Video, *, context: AutoScraper, first=False, just_
         print(f'remote status changed for video {video.video_id}:', video.status_flush_reason)
         video.did_status_print = True
 
+        # Rescrape meta for saving, even though we don't really need it.
         if video.status in ['live', 'postlive']:
-            rescrape_chatdownloader(video)
+            if not os.path.exists(f'by-video-id/{video.video_id}.meta.{video.status}'):
+                rescrape_chatdownloader(video)
 
     # Process only on change
     if video.did_progress_print:
@@ -2282,10 +2310,11 @@ def print_autoscraper_statistics(*, context: AutoScraper):
     print("number of active children: " + str(len(mp.active_children())))   # side effect: joins finished tasks
     print("number of known lives: " + str(len(context.lives)))
 
-    counters: Dict[str, Any] = {'progress': {}, 'status': {}, 'meta': 0, 'rawmeta': 0}
+    counters: Dict[str, Any] = {'progress': {}, 'status': {}, 'diskmeta': 0, 'meta': 0, 'rawmeta': 0}
     for video in context.lives.values():
         counters['status'][video.status] = counters['status'].setdefault(video.status, 0) + 1
         counters['progress'][video.progress] = counters['progress'].setdefault(video.progress, 0) + 1
+        counters['diskmeta'] += (video.meta is None and getattr(video, 'metafile_exists', False) is not False)
         counters['meta'] += (video.meta is not None)
         counters['rawmeta'] += (video.rawmeta is not None)
 
@@ -2297,6 +2326,7 @@ def print_autoscraper_statistics(*, context: AutoScraper):
     for progress, count in counters['progress'].items():
         print(f"  number with progress state {progress}:", count)
 
+    print("number of diskmeta objects:", counters['diskmeta'])
     print("number of meta objects:", counters['meta'])
     print("number of rawmeta objects:", counters['rawmeta'])
     print("number of tracked pid groups: " + str(len(context.pids)))
