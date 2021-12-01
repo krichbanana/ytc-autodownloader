@@ -11,6 +11,7 @@ if [[ -z "$channelbase" ]]; then
 fi
 
 suf_membership="/membership"
+suf_community="/community"
 
 tmppre="tmp.${channelbase?}"
 rm "${tmppre}.url" 2>/dev/null
@@ -57,6 +58,7 @@ echo "$next_time" >"$next_scrape_file"
 # Note that if cookies are bad, a redirection may occur.
 url="https://www.youtube.com/channel/$channelbase$suf_membership"
 if ((has_cookies)); then
+    echo "url: $url"
     "$ytdlp_cmd" -s -q -j --cookies="$cookie_file" --sleep-requests 0.1 --ignore-no-formats-error --flat-playlist "$url" | grep -vF '/channel/' >"${tmppre}.membership"
 else
     echo '(channel membership tab scraper) cookies not used!' >&2
@@ -65,13 +67,53 @@ fi
 ecode=$?
 curr_time="$(date "+%s")"  # epoch time (seconds)
 if [[ "$ecode" != 0 ]]; then
-    echo "(channel membership tab scraper) warning: fetch for ${tmppre}. exited with error: $ecode" >&2
+    echo "(channel membership tab scraper) warning: fetch for ${tmppre} (membership tab). exited with error: $ecode" >&2
     echo "$curr_time" > "${channelbase}.mem.last_failure"
 else
     echo "$curr_time" > "${channelbase}.mem.last_success"
 fi
 jq -r <"${tmppre}.membership" 'select(.id != null)|.id' > "${tmppre}.membership.url"
 
+# If membership returned no results (A/B test?), try community page.
+url="https://www.youtube.com/channel/$channelbase$suf_community"
+if [[ ! -s "${tmppre}.membership.url" ]]; then
+    if ((has_cookies)); then
+        echo 'no membership videos on membership tab, trying community tab'
+        echo "url: $url"
+        "$ytdlp_cmd" -s -q -j --sleep-requests 0.1 --ignore-no-formats-error --flat-playlist "$url" >"${tmppre}.community.nocookies"
+        ecode=$?
+        curr_time="$(date "+%s")"  # epoch time (seconds)
+        if [[ "$ecode" != 0 ]]; then
+            echo "(channel membership tab scraper) warning: fetch for ${tmppre} (community tab, no cookies). exited with error: $ecode" >&2
+            echo "$curr_time" > "${channelbase}.comm.last_failure"
+        else
+            echo "$curr_time" > "${channelbase}.comm.last_success"
+        fi
+        jq -r <"${tmppre}.community.nocookies" 'select(.id != null)|.id' | sort | uniq > "${tmppre}.community.nocookies.url"
+
+        echo "url: $url"
+        "$ytdlp_cmd" -s -q -j --cookies="$cookie_file" --sleep-requests 0.1 --ignore-no-formats-error --flat-playlist "$url" >"${tmppre}.community.withcookies"
+        ecode=$?
+        curr_time="$(date "+%s")"  # epoch time (seconds)
+        if [[ "$ecode" != 0 ]]; then
+            echo "(channel membership tab scraper) warning: fetch for ${tmppre} (community tab, with cookies). exited with error: $ecode" >&2
+            echo "$curr_time" > "${channelbase}.comm-cookied.last_failure"
+        else
+            echo "$curr_time" > "${channelbase}.comm-cookied.last_success"
+        fi
+        jq -r <"${tmppre}.community.withcookies" 'select(.id != null)|.id' | sort | uniq > "${tmppre}.community.withcookies.url"
+
+        comm -13 <(sort "${tmppre}.community.nocookies.url" | uniq) <(sort "${tmppre}.community.withcookies.url" | uniq) | grep -vF '/channel/' >"${tmppre}.membership"
+    fi
+    cp "${tmppre}.membership" "${tmppre}.membership.url"
+    foundcnt_known="$(wc -l "${tmppre}.membership.url" | cut -d ' ' -f 1)"
+    foundcnt_no="$(wc -l "${tmppre}.community.nocookies.url" | cut -d ' ' -f 1)"
+    foundcnt_with="$(wc -l "${tmppre}.community.withcookies.url" | cut -d ' ' -f 1)"
+    echo "(channel membership tab scraper)" "${foundcnt_known?} member video entries ("${foundcnt_no?}" public videos on community tab, ${foundcnt_with?} with cookies)"
+fi
+
+
+# FIXME: jq always makes this file.
 # Bail out early if out actions are futile to reduce console spam.
 if [[ ! -f "${tmppre}.membership.url" ]]; then
     echo "(channel membership tab scraper) there doesn't seem to be any videos on the membership tab, aborting."
