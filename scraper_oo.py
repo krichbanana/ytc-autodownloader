@@ -21,6 +21,10 @@ from typing import (
 from bs4 import BeautifulSoup  # type: ignore
 from chat_downloader import ChatDownloader  # type: ignore
 from chat_downloader.sites import YouTubeChatDownloader  # type: ignore
+from chat_downloader.errors import (  # type: ignore
+    UserNotFound,
+    NoVideos
+)
 
 from utils import (
     check_pid,
@@ -245,6 +249,7 @@ class Channel:
         self.videos = set()
         self.init_timestamp = get_timestamp_now()
         self.modify_timestamp = self.init_timestamp
+        self.batch_end_timestamp = 0
         self.did_discovery_print = False
         self.batching = False
         self.batch = None
@@ -271,25 +276,41 @@ class Channel:
             if self.batching:
                 self.batch |= new_videos
 
+    # A batch is used to identify the results of the last scrape task.
+
     def start_batch(self):
-        """ Declare that the next videos are a new batch """
+        """ Declare that the next videos are a new batch, resetting batch state. """
         if self.batching:
             raise TransitionException("channel batch already started")
 
         self.batching = True
+        self.batch_end_timestamp = 0
         self.batch = set()
 
     def end_batch(self):
-        """ Finish declaring that the next videos are a new batch """
+        """ Finish declaring that the next videos are a new batch
+            Mark the timestamp for when this occured.
+        """
         if not self.batching:
             raise TransitionException("channel batch not started")
 
+        self.batch_end_timestamp = get_timestamp_now()
         self.batching = False
 
     def clear_batch(self):
-        """ Forget a batch (does not affect list of videos) """
+        """ Forget a batch (does not affect list of videos)
+            Forget the timestamp for when a batch was finished.
+        """
         self.batching = False
+        self.batch_end_timestamp = 0
         self.batch = set()
+
+
+def has_metafile_status(video: Video, status: str):
+    if status not in statuses:
+        raise ValueError('invalid status to has_metafile_status')
+
+    return os.path.exists(f'by-video-id/{video.video_id}.meta.{status}') or os.path.exists(f'by-video-id/{video.video_id}.meta.{status}.simple')
 
 
 class AutoScraper:
@@ -303,6 +324,7 @@ class AutoScraper:
         self.pids = {}
         self.general_stats = {}  # for debugging
         self.init_timestamp = get_timestamp_now()
+        self.holoschedule_metachannel = Channel('holoschedule')
 
     def get_or_init_video(self, /, video_id, *, id_source=None, referrer_channel_id=None):
         video = None
@@ -321,15 +343,46 @@ class AutoScraper:
 
         with open("discovery.txt", "a") as dlog:
             try:
-                self.update_lives_status_holoschedule(dlog=dlog)
-            except Exception:
-                print("warning: exception during holoschedule scrape. Network error?")
-                traceback.print_exc()
+                try:
+                    last_batch = self.holoschedule_metachannel.batch
+                except AttributeError:
+                    # format migration
+                    last_batch = self.holoschedule_metachannel = Channel('holoschedule')
 
-            try:
-                self.update_lives_status_holoschedule_api(dlog=dlog)
-            except Exception:
-                print("warning: exception during holoschedule api fetch. Network error?")
+                self.holoschedule_metachannel.start_batch()
+
+                try:
+                    self.update_lives_status_holoschedule(dlog=dlog)
+                except Exception:
+                    print("warning: exception during holoschedule scrape. Network error?")
+                    traceback.print_exc()
+
+                try:
+                    self.update_lives_status_holoschedule_api(dlog=dlog)
+                except Exception:
+                    print("warning: exception during holoschedule api fetch. Network error?")
+                    traceback.print_exc()
+
+                self.holoschedule_metachannel.end_batch()
+
+                # set difference
+                vanished = (last_batch or set()) - (self.holoschedule_metachannel.batch or set())
+                for video_id in vanished:
+                    video = self.get_or_init_video(video_id)
+                    if video.status in ['prelive', 'live']:
+                        if not video.did_meta_flush:
+                            persist_meta(video, context=self)
+                        if has_metafile_status('postlive'):
+                            print(f'holoschedule vanished video: {video.video_id} {video.status} -> postlive')
+                            video.set_status('postlive')
+                        elif video.status == 'prelive' and has_metafile_status('live'):
+                            print(f'holoschedule vanished video: {video.video_id} {video.status} -> live')
+                            video.set_status('live')
+                        else:
+                            video.rescrape_meta()
+
+            except OSError:
+                print("warning: OS (I/O) error during holoschedule follow-up processing.. Network error?")
                 traceback.print_exc()
 
             try:
@@ -454,7 +507,7 @@ class AutoScraper:
                         self.scrape_and_process_channel(channel_id=channel_id, dlog=dlog)
 
         except Exception:
-            print("warning: unexpected error with processing channels.txt", file=sys.stderr)
+            print(f"warning: unexpected error with processing {channels_file}", file=sys.stderr)
             traceback.print_exc()
 
     # TODO: rewrite
@@ -637,126 +690,148 @@ class AutoScraper:
         seen_vids: Set[str] = set()
         lives = self.lives
 
-        counters_seen: Dict[str, Any] = {'upcoming': 0, 'live': 0, 'all': 0}
-        counters: Dict[str, Any] = {'upcoming': 0, 'live': 0, 'all': 0}
+        channel.start_batch()
+
+        # Subcategorization on "Videos" tab
+        video_categories = ['upcoming', 'live', 'all', 'past']
+
+        counters_seen: Dict[str, Any] = dict(map(lambda e: (e, 0), video_categories))
+        counters: Dict[str, Any] = dict(map(lambda e: (e, 0), video_categories))
 
         # We don't just check 'all' since the list used may be slow to update.
-        for video_status in ['upcoming', 'live', 'all']:
-            perpage_count = 0
-            time.sleep(0.1)
-            for basic_video_details in youtube.get_user_videos(channel_id=channel.channel_id, video_status=video_status, params={'max_attempts': 3}):
-                status = 'unknown'
-                status_hint: Optional[str] = None
-                just_scraped = False
-
-                video_id = basic_video_details.get('video_id')
-
+        for video_status in video_categories:
+            attempts_left = 3
+            while attempts_left > 0:
                 try:
-                    # Quickly discern whether a video is upcoming, live or past by the view text.
-                    status_hint = basic_video_details['view_count'].split()[1]
-                    if status_hint == "waiting":
-                        status = 'prelive'
-                    elif status_hint == "watching":
-                        status = 'live'
-                    elif status_hint == "views":
-                        pass
-                    else:
-                        print(f"warning: could not understand status hint ({status_hint = })", file=sys.stderr)
-                        raise RuntimeError('could not extract status hint')
+                    perpage_count = 0
+                    time.sleep(0.1)
+                    for basic_video_details in youtube.get_user_videos(channel_id=channel.channel_id, video_status=video_status, params={'max_attempts': 3}):
+                        time.sleep(0.01)
+                        attempts_left -= 1
+                        status = 'unknown'
+                        status_hint: Optional[str] = None
+                        just_scraped = False
 
-                except KeyError:
-                    # view_count wasn't a valid key, so try to handle it
-                    if video_id is not None and video_id in lives and lives[video_id].progress not in {'unscraped', 'aborted'} and lives[video_id].status not in {'postlive', 'upload'}:
-                        print(f"warning: status hint extraction: no view count visible (likely 0). {seen_vids = } ... {basic_video_details = })", file=sys.stderr)
-                    elif video_id not in lives:
-                        video = self.get_or_init_video(video_id, id_source=f'channel:{video_status}', referrer_channel_id=channel.channel_id)
-                        print(f"warning: status hint extraction: no status hint and new video, doing direct video scrape: {video_id}", file=sys.stderr)
-                        rescrape_chatdownloader(video, channel=channel, youtube=youtube)
-                        just_scraped = True
-                        if video.meta is not None:
-                            live_status = video.meta.get('live_status')
-                            if live_status == 'is_upcoming':
+                        video_id = basic_video_details.get('video_id')
+
+                        try:
+                            # Quickly discern whether a video is upcoming, live or past by the view text.
+                            status_hint = basic_video_details['view_count'].split()[1]
+                            if status_hint == "waiting":
                                 status = 'prelive'
-                            elif live_status == 'is_live':
+                            elif status_hint == "watching":
                                 status = 'live'
-                    else:
-                        # 'waiting' may be hidden on the player response page (possibly a server bug, but could also be intentional)
-                        print(f"warning: status hint extraction: unexpected KeyError, already scraped, not live... {basic_video_details = })", file=sys.stderr)
+                            elif status_hint == "views":
+                                pass
+                            else:
+                                print(f"warning: could not understand status hint ({status_hint = })", file=sys.stderr)
+                                raise RuntimeError('could not extract status hint')
 
-                except Exception:
-                    print("warning: could not extract status hint", file=sys.stderr)
-                    raise
+                        except KeyError:
+                            # view_count wasn't a valid key, so try to handle it
+                            if video_id is not None and video_id in lives and lives[video_id].progress not in {'unscraped', 'aborted'} and lives[video_id].status not in {'postlive', 'upload'}:
+                                print(f"warning: status hint extraction: no view count visible (likely 0). {seen_vids = } ... {basic_video_details = })", file=sys.stderr)
+                            elif video_id not in lives:
+                                video = self.get_or_init_video(video_id, id_source=f'channel:{video_status}', referrer_channel_id=channel.channel_id)
+                                print(f"warning: status hint extraction: no status hint and new video, doing direct video scrape: {video_id}", file=sys.stderr)
+                                rescrape_chatdownloader(video, channel=channel, youtube=youtube)
+                                just_scraped = True
+                                if video.meta is not None:
+                                    live_status = video.meta.get('live_status')
+                                    if live_status == 'is_upcoming':
+                                        status = 'prelive'
+                                    elif live_status == 'is_live':
+                                        status = 'live'
+                            else:
+                                # 'waiting' may be hidden on the player response page (possibly a server bug, but could also be intentional)
+                                print(f"warning: status hint extraction: unexpected KeyError, already scraped, not live... {basic_video_details = })", file=sys.stderr)
 
-                perpage_count += 1
-                if perpage_count >= limit:
-                    if video_id in seen_vids or status == 'unknown' or (video_id in lives and lives[video_id].progress != 'unscraped'):
-                        # would advance to next list, don't forget to count.
-                        # perpage limit reached
-                        if video_id not in seen_vids:
+                        except Exception:
+                            print("warning: could not extract status hint", file=sys.stderr)
+                            raise
+
+                        perpage_count += 1
+                        if perpage_count >= limit:
+                            if video_id in seen_vids or status == 'unknown' or (video_id in lives and lives[video_id].progress != 'unscraped'):
+                                # would advance to next list, don't forget to count.
+                                # perpage limit reached
+                                if video_id not in seen_vids:
+                                    count += 1
+                                    seen_vids.add(video_id)
+                                if status != 'unknown' and not (video_id in lives and lives[video_id].progress != 'unscraped'):
+                                    counters_seen[video_status] += 1
+                                    skipped += 1
+                                break
+
+                        if video_id in seen_vids:
+                            # discovered on a prior list
+                            continue
+                        else:
+                            # a different video was listed
                             count += 1
                             seen_vids.add(video_id)
-                        if status != 'unknown' and not (video_id in lives and lives[video_id].progress != 'unscraped'):
-                            counters_seen[video_status] += 1
+
+                        if status == 'unknown':
+                            # ignore past streams/uploads
+                            continue
+
+                        # video isn't an archive (is prelive/live)
+                        counters_seen[video_status] += 1
+
+                        if video_id in lives and lives[video_id].progress != 'unscraped':
+                            # already known (esp. if listed in 'live' list)
                             skipped += 1
+                            continue
+
+                        # video isn't an archive and is unique so far in our channel search
+                        valid_count += 1
+
+                        if status != 'unknown':
+                            print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}, list: {video_status}): " + video_id, file=sys.stdout, flush=True)
+                            if dlog != sys.stdout:
+                                print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}): " + video_id, file=dlog, flush=True)
+
+                        video = self.get_or_init_video(video_id, id_source=f'channel:{video_status}', referrer_channel_id=channel.channel_id)
+                        counters[video_status] += 1
+
+                        channel.add_video(video)
+
+                        # rescrape and process a new video
+                        if not just_scraped:
+                            rescrape_chatdownloader(video, channel=channel, youtube=youtube)
+
+                        if (video.status != status or not video.did_status_print) and video.status not in ['unknown', 'aborted', 'postlive']:
+                            # Note; this only covers manually added channels in channels.txt; holoschedule isn't covered (yet).
+                            # Using the holoschedule JSON API will help with determinining if a video is live without having
+                            # to add more channels to the channel scrape task (which hits YouTube a bit harder).
+                            if not video.did_status_print:
+                                print(f'status appears to have changed ({video.status_flush_reason}); rescraping:', video.video_id)
+                                video.did_status_print = True
+                            else:
+                                print(f'status appears to have changed ({video.status} -> {status}); rescraping:', video.video_id)
+                            rescrape_chatdownloader(video, channel=channel, youtube=youtube)
+
+                        persist_meta(video, context=self, fresh=True, clobber_pid=False)
+
+                        if perpage_count >= limit:
+                            # perpage limit reached
+                            break
+
+                    if count >= limit * len(video_categories):
+                        print(f"limit of {limit} reached")
                         break
 
-                if video_id in seen_vids:
-                    # discovered on a prior list
-                    continue
+                except UserNotFound:
+                    print(f'warning: "User not found" when scraping videos tab via chat_downloader; retries left: {attempts_left}', file=sys.stderr)
+
+                except NoVideos:
+                    print('warning: "No videos" when scraping videos tab via chat_downloader; not retrying', file=sys.stderr)
+                    attempts_left = 0
+
                 else:
-                    # a different video was listed
-                    count += 1
-                    seen_vids.add(video_id)
+                    attempts_left = 0
 
-                if status == 'unknown':
-                    # ignore past streams/uploads
-                    continue
-
-                # video isn't an archive (is prelive/live)
-                counters_seen[video_status] += 1
-
-                if video_id in lives and lives[video_id].progress != 'unscraped':
-                    # already known (esp. if listed in 'live' list)
-                    skipped += 1
-                    continue
-
-                # video isn't an archive and is unique so far in our channel search
-                valid_count += 1
-
-                if status != 'unknown':
-                    print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}, list: {video_status}): " + video_id, file=sys.stdout, flush=True)
-                    if dlog != sys.stdout:
-                        print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}): " + video_id, file=dlog, flush=True)
-
-                video = self.get_or_init_video(video_id, id_source=f'channel:{video_status}', referrer_channel_id=channel.channel_id)
-                counters[video_status] += 1
-
-                channel.add_video(video)
-
-                # rescrape and process a new video
-                if not just_scraped:
-                    rescrape_chatdownloader(video, channel=channel, youtube=youtube)
-
-                if (video.status != status or not video.did_status_print) and status not in ['unknown', 'aborted', 'prelive']:
-                    # Note; this only covers manually added channels in channels.txt; holoschedule isn't covered (yet).
-                    # Using the holoschedule JSON API will help with determinining if a video is live without having
-                    # to add more channels to the channel scrape task (which hits YouTube a bit harder).
-                    if not video.did_status_print:
-                        print(f'status appears to have changed ({video.status_flush_reason}); rescraping:', video.video_id)
-                        video.did_status_print = True
-                    else:
-                        print(f'status appears to have changed ({video.status} -> {status}); rescraping:', video.video_id)
-                    rescrape_chatdownloader(video, channel=channel, youtube=youtube)
-
-                persist_meta(video, context=self, fresh=True, clobber_pid=False)
-
-                if perpage_count >= limit:
-                    # perpage limit reached
-                    break
-
-            if count >= limit * 3:
-                print(f"limit of {limit} reached")
-                break
+        channel.end_batch()
 
         report_text = ""
         for vs in ['upcoming', 'live', 'all']:
@@ -1242,22 +1317,26 @@ def process_ytmeta(video: Video):
     if video.meta is None:
         raise RuntimeError('precondition failed: called process_ytmeta but ytmeta for video ' + video.video_id + ' not found.')
 
-    if video.meta['is_upcoming']:
+    if video.meta.get('is_upcoming'):
         # note: premieres can also be upcoming but are not livestreams.
         video.set_status('prelive')
         if video.progress == 'unscraped':
             video.set_progress('waiting')
 
-    elif video.meta['is_live']:
+    elif video.meta.get('is_live'):
         video.set_status('live')
         if video.progress == 'unscraped':
             video.set_progress('waiting')
 
-    elif video.meta['is_livestream'] or video.meta['live_endtime']:
+    elif video.meta.get('is_livestream') or video.meta.get('live_endtime'):
         # note: premieres also have a starttime and endtime
         video.set_status('postlive')
         if video.progress == 'unscraped':
             video.set_progress('missed')
+
+    elif video.meta and '_raw_player_response' in video.meta:
+        print('warning: process_ytmeta failed (_raw_player_response detected, field export failed?)', file=sys.stderr)
+        return None
 
     else:
         video.set_status('upload')
@@ -2124,9 +2203,6 @@ def main(context: AutoScraper):
         start_alt_main()
     write_cgroup(mainpid)
 
-    print("Updating lives status", flush=True)
-    context.update_lives_status()
-
     nowtimestamp = str(get_timestamp_now())
     with open("discovery.txt", "a") as dlog:
         print("program started: " + nowtimestamp, file=dlog, flush=True)
@@ -2136,6 +2212,9 @@ def main(context: AutoScraper):
     print("program started: " + nowtimestamp, file=statuslog)
     statuslog.flush()
     os.fsync(statuslog.fileno())
+
+    print("Updating lives status", flush=True)
+    context.update_lives_status()
 
     if not fast_startup:
         # Initial load
@@ -2192,6 +2271,25 @@ def main(context: AutoScraper):
 
 def main_reexec_corruption_check(*, context):
     """ Reexec-specific corruption/crash check """
+    def did_crash(video: Video):
+        dlinfofile = f'by-video-id/{video.video_id}.dlend'
+        crashed = True
+        if os.path.exists(dlinfofile):
+            try:
+                dlinfo = json.load(open(dlinfofile))
+                crashed = dlinfo.get('exit_cause') != 'finished'
+            except json.JSONDecodeError:
+                try:
+                    dlinforaw = open(dlinfofile).read()
+                    for dlinfo in json_stream_wrapper(dlinforaw):
+                        crashed = dlinfo.get('exit_cause') != 'finished'
+                        if not crashed:
+                            break
+                except json.JSONDecodeError:
+                    pass
+
+        return crashed
+
     for video in context.lives.values():
         if video.progress == 'waiting':
             print(f"(initial check after reexec) video {video.video_id}: resetting progress after possible crash: {video.progress} -> unscraped")
@@ -2202,21 +2300,7 @@ def main_reexec_corruption_check(*, context):
                 (pypid, dlpid) = context.pids[video.video_id]
                 if not check_pid(dlpid):
                     # if the OS recycles PIDs, then this check might give bogus results. Obviously, don't 'reexec' after an OS reboot.
-                    dlinfofile = f'by-video-id/{video.video_id}.dlend'
-                    crashed = True
-                    if os.path.exists(dlinfofile):
-                        try:
-                            dlinfo = json.load(open(dlinfofile))
-                            crashed = dlinfo.get('exit_cause') != 'finished'
-                        except json.JSONDecodeError:
-                            try:
-                                dlinforaw = open(dlinfofile).read()
-                                for dlinfo in json_stream_wrapper(dlinforaw):
-                                    crashed = dlinfo.get('exit_cause') != 'finished'
-                                    if not crashed:
-                                        break
-                            except json.JSONDecodeError:
-                                pass
+                    crashed = did_crash(video)
 
                     if crashed:
                         print(f"(initial check after reexec) video {video.video_id}: resetting progress after possible crash (pid {dlpid}: check failed): {video.progress} -> unscraped")
@@ -2229,6 +2313,15 @@ def main_reexec_corruption_check(*, context):
             except Exception:
                 print(f"(initial check after reexec) video {video.video_id}: resetting progress after possible crash (exception!): {video.progress} -> unscraped")
                 video.reset_progress()
+
+        elif video.progress == 'downloaded':
+            if video.status in ['prelive', 'live']:
+                crashed = did_crash(video)
+                if not crashed:
+                    print(f'(initial check after reexec) video {video.video_id}: finished, moving status from {video.status} to postlive')
+                    video.set_status('postlive')
+                    if not has_metafile_status(video=video, status='postlive'):
+                        print(f'warning: video {video.video_id} apparently finished but lacks postlive metafile')
 
 
 def main_initial_scrape_task(*, context):
