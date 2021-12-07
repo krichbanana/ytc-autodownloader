@@ -2398,6 +2398,10 @@ def main_scrape_task(*, context):
                             print(f"(loop check) video {video.video_id}: pid unknown with status '{video.status}', cancelling download: {video.progress} -> aborted")
                             video.set_progress('aborted')
 
+        if not video.did_meta_flush:
+            print(f'warning: ... didn\'t flush meta.... flushing now... video: {video.video_id} (status {video.status}, progress {video.progress})')
+            persist_meta(video=video, context=context, fresh=True, clobber=True)
+
 
 def print_autoscraper_statistics(*, context: AutoScraper):
     print("number of active children: " + str(len(mp.active_children())))   # side effect: joins finished tasks
