@@ -186,4 +186,7 @@ if metacnt > 0:
     print(f"(channel membership tab scraper) {metacnt} entries now in channel-cached/{channelbase}.meta.mem.new")
 
 for suffix in ['.membership', '.community.nocookies', '.community.withcookies']:
-    os.remove(f"{tmppre}{suffix}")
+    try:
+        os.remove(f"{tmppre}{suffix}")
+    except OSError:
+        pass
