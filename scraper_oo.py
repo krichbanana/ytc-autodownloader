@@ -23,6 +23,7 @@ from chat_downloader import ChatDownloader  # type: ignore
 from chat_downloader.sites import YouTubeChatDownloader  # type: ignore
 from chat_downloader.errors import (  # type: ignore
     UserNotFound,
+    VideoNotFound,
     NoVideos
 )
 
@@ -51,6 +52,8 @@ ENABLE_ALTMAIN = False
 ALLOW_COOKIED_COMMUNITY_TAB_SCRAPE = False
 SCRAPER_SLEEP_INTERVAL = 120 * 5 / 2
 CHANNEL_SCRAPE_LIMIT = 30
+DUMP_DIR = 'dump'
+DUMP_DIR_ALT = 'dump_alt'
 
 
 downloadmetacmd = "../yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
@@ -385,6 +388,13 @@ class AutoScraper:
                 print("warning: OS (I/O) error during holoschedule follow-up processing.. Network error?")
                 traceback.print_exc()
 
+            except TransitionException:
+                if channel.batching:
+                    print("warning: batching in progress, resetting:", channel_id, file=sys.stderr)
+                    print("last batch:", channel_id, file=sys.stderr)
+                    print(channel.batch, file=sys.stderr)
+                    channel.clear_batch()
+
             try:
                 self.update_lives_status_urllist(dlog=dlog)
             except Exception:
@@ -509,6 +519,12 @@ class AutoScraper:
         except Exception:
             print(f"warning: unexpected error with processing {channels_file}", file=sys.stderr)
             traceback.print_exc()
+            for channel in self.channels.values(()):
+                if channel.batching:
+                    print("warning: batching in progress, resetting:", channel_id, file=sys.stderr)
+                    print("last batch:", channel_id, file=sys.stderr)
+                    print(channel.batch, file=sys.stderr)
+                    channel.clear_batch()
 
     # TODO: rewrite
     def process_channel_videos_ytdlp(self, /, channel: Channel, *, dlog: IO = None, is_membership=False):
@@ -655,6 +671,11 @@ class AutoScraper:
             except Exception:
                 print("failed to scrape channel list with chat_downloader:", channel_id, file=sys.stderr)
                 traceback.print_exc()
+                if channel.batching:
+                    print("warning: batching in progress, resetting:", channel_id, file=sys.stderr)
+                    print("last batch:", channel_id, file=sys.stderr)
+                    print(channel.batch, file=sys.stderr)
+                    channel.clear_batch()
                 use_ytdlp = True
 
         if use_ytdlp:
@@ -796,22 +817,33 @@ class AutoScraper:
 
                         channel.add_video(video)
 
-                        # rescrape and process a new video
-                        if not just_scraped:
-                            rescrape_chatdownloader(video, channel=channel, youtube=youtube)
+                        vid_attempts_left = 3
+                        while vid_attempts_left > 0:
+                            vid_attempts_left -= 1
+                            try:
+                                # rescrape and process a new video
+                                if not just_scraped:
+                                    rescrape_chatdownloader(video, channel=channel, youtube=youtube)
 
-                        if (video.status != status or not video.did_status_print) and video.status not in ['unknown', 'aborted', 'postlive']:
-                            # Note; this only covers manually added channels in channels.txt; holoschedule isn't covered (yet).
-                            # Using the holoschedule JSON API will help with determinining if a video is live without having
-                            # to add more channels to the channel scrape task (which hits YouTube a bit harder).
-                            if not video.did_status_print:
-                                print(f'status appears to have changed ({video.status_flush_reason}); rescraping:', video.video_id)
-                                video.did_status_print = True
+                                if (video.status != status or not video.did_status_print) and video.status not in ['unknown', 'aborted', 'postlive']:
+                                    # Note; this only covers manually added channels in channels.txt; holoschedule isn't covered (yet).
+                                    # Using the holoschedule JSON API will help with determinining if a video is live without having
+                                    # to add more channels to the channel scrape task (which hits YouTube a bit harder).
+                                    if not video.did_status_print:
+                                        print(f'status appears to have changed ({video.status_flush_reason}); rescraping:', video.video_id)
+                                        video.did_status_print = True
+                                    else:
+                                        print(f'status appears to have changed ({video.status} -> {status}); rescraping:', video.video_id)
+                                    rescrape_chatdownloader(video, channel=channel, youtube=youtube)
+
+                                persist_meta(video, context=self, fresh=True, clobber_pid=False)
+
+                            except VideoNotFound:
+                                print(f'warning: "Video not found" when scraping videos tab via chat_downloader; video retries left: {vid_attempts_left}', file=sys.stderr)
+                                time.sleep(0.1)
+
                             else:
-                                print(f'status appears to have changed ({video.status} -> {status}); rescraping:', video.video_id)
-                            rescrape_chatdownloader(video, channel=channel, youtube=youtube)
-
-                        persist_meta(video, context=self, fresh=True, clobber_pid=False)
+                                vid_attempts_left = 0
 
                         if perpage_count >= limit:
                             # perpage limit reached
@@ -1160,6 +1192,26 @@ def persist_meta(video: Video, *, context: AutoScraper, fresh=False, clobber=Tru
     persist_ytmeta(video, fresh=fresh, clobber=clobber)
 
 
+def check_ytmeta_status_correspondence(video: Video):
+    """ Compare live_status meta field to video.status and check if they are equivalent """
+    if not video.meta or video.meta.get('live_status'):
+        return None
+
+    if video.meta.get('title') is None or video.meta.get('uploader') is None:
+        # probably a failed scrape
+        return None
+
+    status = video.status
+    status_from_ytmeta = video.meta['live_status']
+    if status_from_ytmeta == 'is_live' and status != 'live' \
+            or status_from_ytmeta == 'is_upcoming' and status != 'prelive' \
+            or status_from_ytmeta == 'was_live' and status != 'postlive' \
+            or status_from_ytmeta == 'not_live' and status != 'upload':
+        return False
+
+    return True
+
+
 def persist_ytmeta(video: Video, *, fresh=False, clobber=True):
     """ Persist ytmeta only. """
     metafile = 'by-video-id/' + video.video_id
@@ -1180,6 +1232,13 @@ def persist_ytmeta(video: Video, *, fresh=False, clobber=True):
                 metafileyt_status += ".incomplete"
             else:
                 metafileyt_status += ".simple"
+                try:
+                    status = video.status
+                    status_from_ytmeta = ytmeta['ytmeta']['live_status']
+                    if check_ytmeta_status_correspondence(video) is False:
+                        print(f'warning: ytmeta does not match expected status: "{status_from_ytmeta}" and "{status}" do not correspond.')
+                except KeyError:
+                    print('warning: cannot verify that meta matches the live status')
 
         try:
             if clobber or not os.path.exists(metafileyt):
@@ -1979,23 +2038,23 @@ def process_one_status(video: Video, *, context: AutoScraper, first=False, just_
     statuslog.flush()
 
 
-def dump_lives(context: AutoScraper):
-    with open("dump/lives", "w") as fp:
+def dump_lives(context: AutoScraper, *, dest_dir=DUMP_DIR):
+    with open(f"{dest_dir}/lives", "w") as fp:
         for video in context.lives.values():
             # Fine as long as no objects in the class.
             fp.write(json.dumps(video.__dict__, sort_keys=True))
 
 
-def dump_pids(context: AutoScraper):
-    with open("dump/pids", "w") as fp:
+def dump_pids(context: AutoScraper, *, dest_dir=DUMP_DIR):
+    with open(f"{dest_dir}/pids", "w") as fp:
         fp.write(json.dumps(context.pids))
 
 
-def dump_misc(context: AutoScraper):
-    with open("dump/general_stats", "w") as fp:
+def dump_misc(context: AutoScraper, *, dest_dir=DUMP_DIR):
+    with open(f"{dest_dir}/general_stats", "w") as fp:
         fp.write(json.dumps(context.general_stats))
 
-    with open("dump/staticconfig", "w") as fp:
+    with open(f"{dest_dir}/staticconfig", "w") as fp:
         print("FORCE_RESCRAPE=" + str(FORCE_RESCRAPE), file=fp)
         print("DISABLE_PERSISTENCE=" + str(DISABLE_PERSISTENCE), file=fp)
         print("PERIODIC_SCRAPES=" + str(PERIODIC_SCRAPES), file=fp)
@@ -2005,21 +2064,26 @@ def dump_misc(context: AutoScraper):
 
 def handle_debug_signal(signum, frame):
     if os.getpid() != mainpid:
-        print('warning: got debug signal, but mainpid doesn\'t match', file=sys.stderr)
-        return
+        if is_true_main:
+            print('warning: got debug signal, but mainpid doesn\'t match', file=sys.stderr)
+            return
 
-    os.makedirs('dump', exist_ok=True)
+    dest_dir = DUMP_DIR
+    if not is_true_main:
+        dest_dir = DUMP_DIR_ALT
+
+    os.makedirs(dest_dir, exist_ok=True)
 
     try:
-        dump_lives(context=main_autoscraper)
+        dump_lives(context=main_autoscraper, dest_dir=dest_dir)
     except Exception:
         print('debug: dumping lives failed.')
         traceback.print_exc()
     else:
         print('debug: dumping lives succeeded.')
 
-    dump_pids(context=main_autoscraper)
-    dump_misc(context=main_autoscraper)
+    dump_pids(context=main_autoscraper, dest_dir=dest_dir)
+    dump_misc(context=main_autoscraper, dest_dir=dest_dir)
 
 
 def handle_special_signal(signum, frame):
@@ -2049,15 +2113,21 @@ def handle_special_signal(signum, frame):
 
 def load_dump():
     print('reexec: reexec specified, loading dump')
-    if not os.path.exists('dump'):
+
+    dest_dir = DUMP_DIR
+    if not is_true_main:
+        dest_dir = DUMP_DIR_ALT
+
+    if not os.path.exists(dest_dir):
         os.chdir('oo')
-    if not os.path.exists('dump'):
-        print('reexec: cannot load from dump; dump directory not found')
+    if not os.path.exists(dest_dir):
+        print(f'reexec: cannot load from dump; dump directory "{dest_dir}" not found')
         return False
 
     try:
-        os.system('jq -as <dump/lives >dump/lives.jq')
-        with open("dump/lives.jq", "r") as fp:
+        # FIXME: something that doesn't rely on the shell not splitting the path, should we ever allow dumpdir to change.
+        os.system(f'jq -as <{dest_dir}/lives >{dest_dir}/lives.jq')
+        with open(f"{dest_dir}/lives.jq", "r") as fp:
             jsonres = json.load(fp)
             for viddict in jsonres:
                 video = Video('XXXXXXXXXXX')
@@ -2072,7 +2142,7 @@ def load_dump():
         print('reexec: recalling lives succeeded.')
 
     try:
-        with open("dump/pids", "r") as fp:
+        with open(f"{dest_dir}/pids", "r") as fp:
             jsonres = json.load(fp)
             main_autoscraper.pids = jsonres
             print("reexec: number of videos loaded from pids: " + str(len(main_autoscraper.pids)))
@@ -2137,6 +2207,9 @@ def alt_main(context: AutoScraper):
         Conflicts should be avoided by the user, for now.
     """
     print("Updating lives status (alt-main)", flush=True)
+    # In case we are called directly. Test program won't handle this properly.
+    # signal.signal(signal.SIGUSR1, handle_special_signal)
+    signal.signal(signal.SIGUSR2, handle_debug_signal)
     # Alt-main hacks here
     context.update_lives_status()
 
