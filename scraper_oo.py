@@ -489,6 +489,8 @@ class AutoScraper:
                 rescrape_chatdownloader(video)
                 # important, or else next recall_video() will revert the status!
                 persist_basic_state(video, context=self, clobber=True, clobber_pid=False)
+                if not video.did_meta_flush:
+                    persist_ytmeta(video, fresh=True, clobber=True)
 
         print("discovery: holoschedule (api): new lives:", str(newlives))
         print("discovery: holoschedule (api): known lives:", str(knownlives))
@@ -2447,7 +2449,7 @@ def main_scrape_task(*, context):
 
     for video in context.lives.values():
         # while there is a duplication of effort here, we need to advance the progress once somehow...
-        if not video.did_progress_print:
+        if not video.did_progress_print or not video.did_status_print:
             process_one_status(video, context=context)
         elif video.progress == 'downloading':
             try:
