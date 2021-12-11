@@ -389,11 +389,12 @@ class AutoScraper:
                 traceback.print_exc()
 
             except TransitionException:
-                if channel.batching:
-                    print("warning: batching in progress, resetting:", channel_id, file=sys.stderr)
-                    print("last batch:", channel_id, file=sys.stderr)
-                    print(channel.batch, file=sys.stderr)
-                    channel.clear_batch()
+                for channel in self.channels.values():
+                    if channel.batching:
+                        print("warning: batching in progress, resetting:", channel.channel_id, file=sys.stderr)
+                        print("last batch:", channel.channel_id, file=sys.stderr)
+                        print(channel.batch, file=sys.stderr)
+                        channel.clear_batch()
 
             try:
                 self.update_lives_status_urllist(dlog=dlog)
@@ -715,6 +716,8 @@ class AutoScraper:
 
         channel.start_batch()
 
+        status_hints = []
+
         # Subcategorization on "Videos" tab
         video_categories = ['upcoming', 'live', 'all', 'past']
 
@@ -772,6 +775,8 @@ class AutoScraper:
                         except Exception:
                             print("warning: could not extract status hint", file=sys.stderr)
                             raise
+
+                        status_hints.append((video_id, status))
 
                         perpage_count += 1
                         if perpage_count >= limit:
@@ -866,6 +871,18 @@ class AutoScraper:
                     attempts_left = 0
 
         channel.end_batch()
+
+        for video_id, status_hint in status_hints:
+            if video_id not in self.lives:
+                # Don't create new video objects needlessly, else they will be rescraped.
+                continue
+            video = self.get_or_init_video(video_id, id_source='channel:across', referrer_channel_id=channel.channel_id)
+            if video.status == 'prelive' and status_hint == 'live' \
+                    or video.status == 'live' and status_hint == 'postlive':
+                # Existing videos will not see the suggestion to rescrape since the tab loop skips the processing for them.
+                print(f'channel scraper: tab page suggests new live status, rescraping: {video_id}: "{video.status}" became "{status_hint}"')
+                video.rescrape_meta()
+                persist_meta(video, context=self, fresh=True, clobber=True, clobber_pid=False)
 
         report_text = ""
         for vs in ['upcoming', 'live', 'all']:
@@ -2158,6 +2175,8 @@ def load_dump():
         traceback.print_exc()
     else:
         print('reexec: recalling pids succeeded.')
+
+    print_autoscraper_statistics(context=main_autoscraper)
 
     return True
 
