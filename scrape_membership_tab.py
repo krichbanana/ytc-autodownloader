@@ -88,7 +88,7 @@ def file_touch(path):
         pass
 
 
-next_time = int(get_timestamp_now()) + (60 * 15)  # 15 min throttle time
+next_time = int(get_timestamp_now()) + (60 * 5)  # 5 min throttle time
 write_time_to_file(f'{next_scrape_file}', next_time)
 
 # Note that if cookies are bad, a redirection may occur.
