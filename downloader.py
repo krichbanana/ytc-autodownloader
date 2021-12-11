@@ -244,7 +244,7 @@ class Downloader:
         ytstatus = 'unknown'
 
         try:
-            details = youtube.get_video_data(video_id)
+            details = youtube.get_video_data(video_id, params={'max_attempts': 7})
             is_live = details.get('status') in {'live', 'upcoming'}
             channel_id = details.get('author_id')
             print('(downloader) initial:', details.get('status'), details.get('video_type'), video_id)
@@ -309,7 +309,7 @@ class Downloader:
 
                         youtube = downloader.create_session(YouTubeChatDownloader)
 
-                        details = youtube.get_video_data(video_id)
+                        details = youtube.get_video_data(video_id, params={'max_attempts': 7})
                         is_live = details.get('status') in {'live', 'upcoming'}
                         if retry:
                             print('(downloader) retry:', details.get('status'), details.get('video_type'), video_id)
