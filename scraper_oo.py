@@ -24,7 +24,9 @@ from chat_downloader.sites import YouTubeChatDownloader  # type: ignore
 from chat_downloader.errors import (  # type: ignore
     UserNotFound,
     VideoNotFound,
-    NoVideos
+    NoVideos,
+    RetriesExceeded,
+    ChatDownloaderError
 )
 
 from utils import (
@@ -2019,7 +2021,11 @@ def process_one_status(video: Video, *, context: AutoScraper, first=False, just_
 
                 persist_basic_state(video, context=context)
                 # once more, for postlive ytmeta
-                rescrape_chatdownloader(video, youtube=youtube)
+                try:
+                    rescrape_chatdownloader(video, youtube=youtube)
+                except RetriesExceeded:
+                    print('warning: postlive rescrape failed while downloading meta, connectivity issue?', file=sys.stderr)
+                    traceback.print_exc()
                 persist_meta(video, context=context, fresh=True, clobber=True)
                 delete_ytmeta_raw(video, context=context)
 
@@ -2353,6 +2359,10 @@ def main(context: AutoScraper):
             statuslog.flush()
             raise
 
+        except ChatDownloaderError:
+            print('warning: an error from chat_downloader was not handled! dumping backtrace.', file=sys.stderr)
+            traceback.print_exc()
+
         except Exception as exc:
             start_watchdog()
             raise RuntimeError("Exception encountered during main loop processing") from exc
@@ -2439,7 +2449,13 @@ def main_initial_scrape_task(*, context):
         maybe_rescrape_initially(video, context=context)
 
     for video in context.lives.values():
-        process_one_status(video, context=context, first=True)
+        try:
+            process_one_status(video, context=context, first=True)
+        except ChatDownloaderError:
+            print('warning: initial scrape task: process_one_status threw an error from chat_downloader.', file=sys.stderr)
+        except OSError:
+            print('error: initial scrape task: process_one_status threw an error from the OS.', file=sys.stderr)
+            raise
 
 
 def main_scrape_task(*, context):
@@ -2457,24 +2473,41 @@ def main_scrape_task(*, context):
         if video not in context.lives:
             recall_video(video_id, context=context, filter_progress=True)
             if video.progress == 'waiting':
-                # This may modify our pid list, take care above.
                 try:
-                    (pypid, dlpid) = context.pids[video.video_id]
-                    if not check_pid(dlpid):
+                    # This may modify our pid list, take care above.
+                    try:
+                        (pypid, dlpid) = context.pids[video.video_id]
+                        if not check_pid(dlpid):
+                            process_one_status(video, context=context, force=True)
+
+                    except KeyError:
                         process_one_status(video, context=context, force=True)
 
-                except KeyError:
-                    process_one_status(video, context=context, force=True)
+                except ChatDownloaderError:
+                    print('warning: main scrape task, pids check: process_one_status threw an error from chat_downloader.', file=sys.stderr)
+                except OSError:
+                    print('warning: main scrape task, pids check: process_one_status threw an error from the OS.', file=sys.stderr)
 
     for video in context.lives.values():
         # while there is a duplication of effort here, we need to advance the progress once somehow...
         if not video.did_progress_print or not video.did_status_print:
-            process_one_status(video, context=context)
+            try:
+                process_one_status(video, context=context)
+            except ChatDownloaderError:
+                print('warning: main scrape task, progress check: process_one_status threw an error from chat_downloader.', file=sys.stderr)
+            except OSError:
+                print('warning: main scrape task, progress check: process_one_status threw an error from the OS.', file=sys.stderr)
         elif video.progress == 'downloading':
             try:
                 (pypid, dlpid) = context.pids[video.video_id]
                 if not check_pid(dlpid):
                     process_one_status(video, context=context, force=True)
+
+            except ChatDownloaderError:
+                print('warning: main scrape task, progress check invoking pid check: process_one_status threw an error from chat_downloader.', file=sys.stderr)
+
+            except OSError:
+                print('warning: main scrape task, progress check invoking pid check: process_one_status threw an error from the OS.', file=sys.stderr)
 
             except KeyError:
                 if video.status == 'error':
