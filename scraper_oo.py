@@ -31,11 +31,21 @@ from chat_downloader.errors import (  # type: ignore
 
 from utils import (
     check_pid,
+    get_timestamp_now,
     extract_video_id_from_yturl,
     json_stream_wrapper,
     meta_load_fast,
     meta_extract_start_timestamp,
     meta_extract_raw_live_status
+)
+from video import (
+    BaseVideo,
+    TransitionException,
+    statuses,
+    progress_statuses
+)
+from channel import (
+    BaseChannel
 )
 
 
@@ -69,10 +79,6 @@ holoscrapecmd = 'wget -nv --load-cookies=../cookies-schedule-hololive-tv.txt htt
 holoscrape_api_cmd = "wget -nv https://schedule.hololive.tv/api/list/1 -O - | jq '[.dateGroupList|.[]|.videoList|.[]|{datetime,isLive,platformType,url,title,name}|select(.platformType == 1)]' >| auto-lives_filt.json"
 
 
-statuses = frozenset(['unknown', 'prelive', 'live', 'postlive', 'upload', 'error'])
-progress_statuses = frozenset(['unscraped', 'waiting', 'downloading', 'downloaded', 'missed', 'invalid', 'aborted'])
-
-
 # For alt-main usage
 is_true_main = True
 
@@ -82,142 +88,7 @@ def _get_member_cookie_file(channel_id: str):
         return f"cookies/{channel_id}.txt"
 
 
-def get_timestamp_now():
-    return dt.datetime.utcnow().timestamp()
-
-
-class TransitionException(Exception):
-    """ Invalid live status transition by setter """
-    pass
-
-
-class Video:
-    """ Record the online status of a video, along with the scraper's download stage.
-        Metadata from Youtube is also stored when needed.
-        video_id is the unique Youtube ID for identifying a video.
-    """
-    def __init__(self, video_id, *, id_source=None, referrer_channel_id=None):
-        self.video_id = video_id
-        self.id_source = id_source
-        self.referrer_channel_id = referrer_channel_id
-        self.status = 'unknown'
-        self.progress = 'unscraped'
-        self.warned = False
-        self.init_timestamp = get_timestamp_now()
-        self.transition_timestamp = self.init_timestamp
-        self.meta_timestamp = None
-        # might delete one
-        self.meta = None
-        self.rawmeta = None
-        # might change
-        self.did_discovery_print = False
-        self.did_status_print = False
-        self.did_progress_print = False
-        self.did_meta_flush = False
-        self.status_flush_reason = 'new video object'
-        self.progress_flush_reason = 'new video object'
-        self.meta_flush_reason = 'new video object'
-        # declare our possible intent here
-        self.next_event_check = 0
-
-    def set_status(self, status: str):
-        """ Set the online status (live progress) of a video
-            Currently can be any of: 'unknown', 'prelive', 'live', 'postlive', 'upload'.
-            Invalid progress transtitions print a warning (except for 'unknown').
-        """
-        if status not in statuses:
-            raise ValueError(f"tried to set invalid status: {status}")
-
-        if status == 'unknown':
-            raise TransitionException("status cannot be set to 'unknown', only using reset")
-
-        if status == 'prelive' and self.status in {'live', 'postlive', 'upload'} \
-                or status == 'live' and self.status in {'postlive', 'upload'} \
-                or status == 'postlive' and self.status in {'upload'}:
-            print(f"warning: new video status invalid: transitioned from {self.status} to {status}", file=sys.stderr)
-            self.warned = True
-
-        if status == 'postlive' and self.status in {'prelive'}:
-            print(f"warning: new video status suspicious: transitioned from {self.status} to {status}", file=sys.stderr)
-            self.warned = True
-
-        self.status_flush_reason = getattr(self, 'status_flush_reason', 'new video object (outdated layout!)')
-
-        if status == self.status:
-            print(f"warning: new video status suspicious: no change in status: {status}", file=sys.stderr)
-            self.warned = True
-        else:
-            if self.did_status_print:
-                self.status_flush_reason = f'status changed: {self.status} -> {status}'
-            else:
-                self.status_flush_reason += f'; {self.status} -> {status}'
-            self.did_status_print = False
-
-        self.transition_timestamp = get_timestamp_now()
-        self.status = status
-
-    def set_progress(self, progress: str):
-        """ Set the scraper progress of a video
-            Currently can be any of: 'unscraped', 'waiting', 'downloading', 'downloaded', 'missed', 'invalid', 'aborted'
-            Invalid progress transtitions throw a TransitionException.
-        """
-        if progress not in progress_statuses:
-            raise ValueError(f"tried to set invalid progress status: {progress}")
-
-        if progress == 'unscraped':
-            raise TransitionException("progress cannot be set to 'unscraped', only using reset")
-
-        if progress == 'waiting' and self.progress != 'unscraped' \
-                or progress == 'downloading' and self.progress != 'waiting' \
-                or progress == 'downloaded' and self.progress != 'downloading' \
-                or progress == 'missed' and self.progress not in {'unscraped', 'waiting'} \
-                or progress == 'invalid' and self.progress != 'unscraped' \
-                or progress == 'aborted' and self.progress == 'downloaded':
-            raise TransitionException(f"progress cannot be set to {progress} from {self.progress}")
-
-        self.progress_flush_reason = getattr(self, 'progress_flush_reason', 'new video object (outdated layout!)')
-
-        if progress == self.progress:
-            print(f"warning: new progress status suspicious: no change in progress: {progress}", file=sys.stderr)
-            self.warned = True
-        else:
-            if self.did_progress_print:
-                self.progress_flush_reason = f'progress changed: {self.progress} -> {progress}'
-            else:
-                self.progress_flush_reason += f'; {self.progress} -> {progress}'
-            self.did_progress_print = False
-
-        self.transition_timestamp = get_timestamp_now()
-        self.progress = progress
-
-        if progress in {'unscraped', 'waiting', 'downloading'} and self.status == 'postlive':
-            print(f"warning: overriding new progress state due to postlive status: {progress} -> missed", file=sys.stderr)
-            self.progress = 'missed'
-
-    def reset_status(self):
-        """ Set the status to 'unknown'. Useful for clearing state loaded from disk. """
-        self.did_status_print = False
-        self.status_flush_reason = f'status reset: {self.status} -> unknown'
-        self.status = 'unknown'
-
-    def reset_progress(self):
-        """ Set progress to 'unscraped'. Useful for clearing state loaded from disk. """
-        self.did_progress_print = False
-        self.progress_flush_reason = f'progress reset: {self.progress} -> unscraped'
-        self.progress = 'unscraped'
-
-    def prepare_meta(self):
-        """ Load meta from disk or fetch it from YouTube. """
-        # NOTE: Currently unused.
-        if self.meta is None:
-            rescrape(self)
-
-            self.rawmeta = self.meta.get('raw')
-            if self.rawmeta:
-                del self.meta['raw']
-
-            self.meta_timestamp = get_timestamp_now()
-
+class Video(BaseVideo):
     def rescrape_meta(self):
         """ Ignore known meta and fetch meta from YouTube. """
         cookie_file = _get_member_cookie_file(self.referrer_channel_id or self.meta and self.meta.get('channel_id'))
@@ -247,68 +118,8 @@ class Video:
                 break
 
 
-class Channel:
-    """ Tracks basic details about a channel, such as the videos that belong to it. """
-    def __init__(self, channel_id):
-        self.channel_id = channel_id
-        self.videos = set()
-        self.init_timestamp = get_timestamp_now()
-        self.modify_timestamp = self.init_timestamp
-        self.batch_end_timestamp = 0
-        self.did_discovery_print = False
-        self.batching = False
-        self.batch = None
-
-    def add_video(self, video: Video):
-        """ Add a video to our list, and possibly our current batch
-            Modifies timestamp on success
-        """
-        if video.video_id not in self.videos:
-            self.videos.add(video.video_id)
-            self.modify_timestamp = get_timestamp_now()
-            self.did_discovery_print = False
-            if self.batching:
-                self.batch.add(video.video_id)
-
-    def add_video_ids(self, video_ids: list):
-        """ Add videos to our list, and possibly our current batch
-            Modifies timestamp on success
-        """
-        new_videos = set(video_ids) - self.videos
-        if len(new_videos) > 0:
-            self.modify_timestamp = get_timestamp_now()
-            self.did_discovery_print = False
-            if self.batching:
-                self.batch |= new_videos
-
-    # A batch is used to identify the results of the last scrape task.
-
-    def start_batch(self):
-        """ Declare that the next videos are a new batch, resetting batch state. """
-        if self.batching:
-            raise TransitionException("channel batch already started")
-
-        self.batching = True
-        self.batch_end_timestamp = 0
-        self.batch = set()
-
-    def end_batch(self):
-        """ Finish declaring that the next videos are a new batch
-            Mark the timestamp for when this occured.
-        """
-        if not self.batching:
-            raise TransitionException("channel batch not started")
-
-        self.batch_end_timestamp = get_timestamp_now()
-        self.batching = False
-
-    def clear_batch(self):
-        """ Forget a batch (does not affect list of videos)
-            Forget the timestamp for when a batch was finished.
-        """
-        self.batching = False
-        self.batch_end_timestamp = 0
-        self.batch = set()
+class Channel(BaseChannel):
+    pass
 
 
 def has_metafile_status(video: Video, status: str):
@@ -1922,7 +1733,6 @@ def process_one_status(video: Video, *, context: AutoScraper, first=False, just_
     if video.progress == 'waiting':
         if video.meta is None:
             print("error: video.meta missing for video " + video_id, file=sys.stderr)
-            # video.prepare_meta()
         else:
             print("status: just invoked: " + video_id, file=statuslog)
             invoke_downloader(video, context=context)
