@@ -237,7 +237,7 @@ class Downloader:
         downloader = ChatDownloader(cookies=cookies)
 
         # Forcefully create a YouTube session
-        youtube = downloader.create_session(YouTubeChatDownloader)
+        youtube: YouTubeChatDownloader = downloader.create_session(YouTubeChatDownloader)
 
         last_progress = 'invoked'
         progress = 'invoked'
@@ -307,7 +307,7 @@ class Downloader:
                     try:
                         downloader = ChatDownloader(cookies=cookies)
 
-                        youtube = downloader.create_session(YouTubeChatDownloader)
+                        youtube: YouTubeChatDownloader = downloader.create_session(YouTubeChatDownloader)
 
                         details = youtube.get_video_data(video_id, params={'max_attempts': 7})
                         is_live = details.get('status') in {'live', 'upcoming'}
