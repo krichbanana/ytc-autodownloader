@@ -6,7 +6,6 @@ import subprocess
 import signal
 import datetime as dt
 import json
-import traceback
 
 from chat_downloader import ChatDownloader
 from chat_downloader.sites import YouTubeChatDownloader
@@ -576,10 +575,13 @@ def main():
         try:
             downloader.write_initial_progress('invoked')
             downloader.run_loop()
-        except Exception:
-            downloader.write_final_progress('crashed')
+        except Exception as e:
+            try:
+                downloader.write_final_progress('crashed')
+            except FileNotFoundError:
+                print('(downloader) state directory is not set up!', file=sys.stderr)
             print(f"(downloader) fatal exception (pid = {os.getpid()}, ppid = {os.getppid()}, video_id = {downloader.video_id}, outname = {downloader.outname})")
-            traceback.print_exc()
+            raise e  # exit with non-zero status
         else:
             downloader.write_final_progress('finished')
 
