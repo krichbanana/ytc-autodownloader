@@ -62,7 +62,7 @@ FORCE_RESCRAPE = False
 PERIODIC_SCRAPES = False
 ENABLE_ALTMAIN = False
 ALLOW_COOKIED_COMMUNITY_TAB_SCRAPE = False
-SCRAPER_SLEEP_INTERVAL = 120 * 5 / 2
+SCRAPER_SLEEP_INTERVAL = 60
 CHANNEL_SCRAPE_LIMIT = 30
 DUMP_DIR = 'dump'
 DUMP_DIR_ALT = 'dump_alt'
@@ -459,7 +459,7 @@ class AutoScraper:
 
         channel.clear_batch()
 
-    def scrape_and_process_channel(self, channel_id, *, dlog: IO = None) -> None:
+    def scrape_and_process_channel(self, channel_id, *, dlog: IO = None, throttle=300.0) -> None:
         """ Scrape a channel, with fallbacks.
             Can be called standalone.
         """
@@ -471,6 +471,14 @@ class AutoScraper:
 
         if channel_id in self.channels:
             channel = self.channels[channel_id]
+
+            elapsed = get_timestamp_now() - channel.batch_end_timestamp
+            if elapsed < 0:
+                print(f'warning: channel batch-end timestamp is in the future: ahead by {(-elapsed)} (channel: {channel_id})', file=sys.stderr)
+            if elapsed < throttle:
+                print(f'notice: skipping channel scrape (channel: {channel_id}) as time elapsed is too short ({elapsed:0.3F} < {throttle})', file=sys.stderr)
+                return
+
         else:
             channel = Channel(channel_id)
             self.channels[channel_id] = channel
@@ -519,6 +527,8 @@ class AutoScraper:
         youtube: YouTubeChatDownloader = downloader.create_session(YouTubeChatDownloader)
 
         limit = CHANNEL_SCRAPE_LIMIT
+        PAGE_DELAY = 0.004
+        ATTEMPT_DELAY = 0.06
         count = 0
         perpage_count = 0
         valid_count = 0
@@ -543,9 +553,9 @@ class AutoScraper:
             while attempts_left > 0:
                 try:
                     perpage_count = 0
-                    time.sleep(0.1)
+                    time.sleep(ATTEMPT_DELAY)
                     for basic_video_details in youtube.get_user_videos(channel_id=channel.channel_id, video_status=video_status, params={'max_attempts': 3}):
-                        time.sleep(0.01)
+                        time.sleep(PAGE_DELAY)
                         attempts_left -= 1
                         status = 'unknown'
                         status_hint: Optional[str] = None
@@ -820,12 +830,20 @@ def get_hololivetv_api_json():
     return json.load(open('auto-lives_filt.json'))
 
 
-def rescrape_chatdownloader(video: Video, *, channel=None, youtube=None, cookies=None) -> None:
+def rescrape_chatdownloader(video: Video, *, channel=None, youtube=None, cookies=None, throttle=15.0) -> None:
     """ rescrape_ytdlp, but using chat_downloader
         Interpret yt-dlp rawmeta.
         Populates meta fields.
     """
     video_id = video.video_id
+    if video.meta_timestamp:
+        elapsed = get_timestamp_now() - video.meta_timestamp
+        if elapsed < 0:
+            print(f'warning: elapsed time since scrape is negative: {elapsed} (video: {video_id})', file=sys.stderr)
+        if elapsed < throttle:
+            print(f'warning: throttling scrape for video {video_id} ({elapsed:0.6F} < {throttle})', file=sys.stderr)
+            return
+
     video_data, player_response, status = invoke_scraper_chatdownloader(video_id, youtube=youtube, skip_status=False, cookies=cookies)
 
     # keep only known useful fields, junk spam/useless fields
@@ -1293,7 +1311,7 @@ def maybe_rescrape_initially(video: Video, *, context: AutoScraper):
         print(f"(initial check) video {video.video_id}: resetting progress after possible crash: {video.progress} -> unscraped")
         video.reset_progress()
 
-    if video.progress in {'missed', 'aborted'} and video.status in {'unknown', 'prelive'}:
+    if video.progress == 'missed' and video.status in {'unknown', 'prelive'}:
         # Recover from potential corruption or bug
         print(f"(initial check) video {video.video_id}: resetting progress after possible bug: {video.progress} -> unscraped. found status: {video.status}")
         video.reset_progress()
