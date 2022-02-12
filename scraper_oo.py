@@ -504,17 +504,16 @@ class AutoScraper:
 
         if use_ytdlp:
             is_membership = not is_true_main
-            self.invoke_channel_scraper_ytdlp(channel, membership_scrape=is_membership)
-            self.process_channel_videos_ytdlp(channel, dlog=dlog, is_membership=is_membership)
+            self.scrape_and_process_channel_ytdlp(channel, dlog=dlog, is_membership=is_membership, throttle=throttle)
 
         # Scrape community tab page for links (esp. member stream links)
         # Currently only try this when cookies are provided.
         # TODO: use membership page instead, since it only includes (recent?) member videos and posts.
+        # NOTE: alt_main is a preferable solution and tries the above tab page.
         # I believe this is a new feature by YouTube (~Nov 2021).
         if ALLOW_COOKIED_COMMUNITY_TAB_SCRAPE:
             if os.path.exists(channel_id + ".txt"):
-                self.invoke_channel_scraper_ytdlp(channel, community_scrape=True)
-                self.process_channel_videos_ytdlp(channel, dlog=dlog)
+                self.scrape_and_process_channel_ytdlp(channel, dlog=dlog, community_scrape=True, throttle=throttle)
 
     def scrape_and_process_channel_chatdownloader(self, /, channel: Channel, *, dlog: IO = None):
         """ Use chat_downloader's get_user_videos() to quickly get channel videos and live statuses. """
@@ -654,17 +653,19 @@ class AutoScraper:
                                 # rescrape and process a new video
                                 if not just_scraped:
                                     rescrape_chatdownloader(video, channel=channel, youtube=youtube)
+                                    just_scraped = True
 
                                 if (video.status != status or not video.did_status_print) and video.status not in ['unknown', 'aborted', 'postlive']:
                                     # Note; this only covers manually added channels in channels.txt; holoschedule isn't covered (yet).
                                     # Using the holoschedule JSON API will help with determinining if a video is live without having
                                     # to add more channels to the channel scrape task (which hits YouTube a bit harder).
                                     if not video.did_status_print:
-                                        print(f'status appears to have changed ({video.status_flush_reason}); rescraping:', video.video_id)
+                                        print(f'status appears to have changed ({video.status_flush_reason}); maybe rescraping:', video.video_id)
                                         video.did_status_print = True
                                     else:
-                                        print(f'status appears to have changed ({video.status} -> {status}); rescraping:', video.video_id)
-                                    rescrape_chatdownloader(video, channel=channel, youtube=youtube)
+                                        print(f'status appears to have changed ({video.status} -> {status}); maybe rescraping:', video.video_id)
+                                    if not just_scraped:
+                                        rescrape_chatdownloader(video, channel=channel, youtube=youtube)
 
                                 persist_meta(video, context=self, fresh=True, clobber_pid=False)
 
@@ -712,6 +713,20 @@ class AutoScraper:
             report_text += f"{vs} {counters[vs]}/{counters_seen[vs]}; "
 
         print(f"discovery: channels list (via chat_downloader): channel {channel.channel_id} new lives/total: " + report_text + f"{(valid_count)}/{skipped} across; {count} processed)")
+
+    def scrape_and_process_channel_ytdlp(self, /, channel: Channel, *, dlog: IO = None, community_scrape=False, is_membership=False, throttle=300.0):
+        """ Scrape and process a channel using yt-dlp, but throttle """
+        channel_id = channel.channel_id
+        if channel_id in self.channels:
+            elapsed = get_timestamp_now() - channel.batch_end_timestamp
+            if elapsed < 0:
+                print(f'warning: channel batch-end timestamp is in the future: ahead by {(-elapsed)} (channel: {channel_id})', file=sys.stderr)
+            if elapsed < throttle:
+                print(f'notice: skipping yt-dlp channel scrape (channel: {channel_id}) as time elapsed is too short ({elapsed:0.3F} < {throttle})', file=sys.stderr)
+                return
+
+        self.invoke_channel_scraper_ytdlp(channel, membership_scrape=is_membership)
+        self.process_channel_videos_ytdlp(channel, dlog=dlog, is_membership=is_membership)
 
     def invoke_channel_scraper_ytdlp(self, /, channel: Channel, *, community_scrape=False, membership_scrape=False):
         """ Scrape the channel for latest videos and batch-fetch meta state. """
@@ -864,12 +879,16 @@ def rescrape_chatdownloader(video: Video, *, channel=None, youtube=None, cookies
     try:
         meta = populate_meta_fields_chatdownloader(player_response=player_response, video_data=video_data, channel=channel, video_id=video_id)
     except KeyError:
+        if not dubious_status:
+            print(f'warning: meta field extraction threw an unexpected error; video {video_id} has remote status {status}', file=sys.stderr)
+            traceback.print_exc()
         # potentially a memory leak
         meta = {"_raw_player_response": player_response}
 
     if not dubious_status:
         video.set_status(status)
     else:
+        print(f'notice: video {video_id}: final status = {video.status}; final progress = {video.progress}; new status has reported error', file=sys.stderr)
         video.set_status('error')
 
     video.did_meta_flush = False
@@ -924,7 +943,11 @@ def populate_meta_fields_chatdownloader(*, player_response: Dict[str, Any], vide
     meta['channel_id'] = video_details['channelId']
     meta['title'] = microformat['title']['simpleText']
     meta['raw'] = player_response  # I think this is different from yt-dlp infodict output
-    meta['description'] = microformat['description']['simpleText']
+    try:
+        meta['description'] = microformat['description']['simpleText']
+    except KeyError:
+        # Video lacks a description
+        meta['description'] = None
     meta['uploader'] = video_data['author']
     meta['duration'] = video_data['duration']
 
@@ -1172,7 +1195,8 @@ def recall_video(video_id: str, *, context: AutoScraper, filter_progress=False, 
         # Reduce memory usage by not loading ytmeta for undownloadable videos
         if valid_meta and filter_progress:
             should_ignore = meta['status'] in {'postlive', 'upload'} and meta['progress'] != 'unknown'
-            should_ignore = should_ignore or meta['progress'] in {'downloaded', 'missed', 'invalid', 'aborted'}
+            should_ignore = should_ignore or meta['progress'] in {'downloaded', 'missed', 'invalid'}
+            should_ignore = should_ignore or meta['status'] == 'error' and meta['progress'] == 'aborted'
 
         # note: FORCE_RESCRAPE might clobber old ytmeta if not loaded (bad if the video drastically changes or goes unavailable)
         if valid_ytmeta and not should_ignore:
@@ -1316,6 +1340,11 @@ def maybe_rescrape_initially(video: Video, *, context: AutoScraper):
         print(f"(initial check) video {video.video_id}: resetting progress after possible bug: {video.progress} -> unscraped. found status: {video.status}")
         video.reset_progress()
 
+    if video.progress == 'aborted' and video.status in {'unknown', 'prelive', 'live'}:
+        # Recover from server-induced error
+        print(f"(initial check) video {video.video_id}: resetting progress after possible server-induced abort: {video.progress} -> unscraped. found status: {video.status}")
+        video.reset_progress()
+
     if video.progress == 'unscraped' or FORCE_RESCRAPE:
         video.rescrape_meta()
         if video.meta is None:
@@ -1340,7 +1369,7 @@ def populate_meta_fields_ytdlp(jsonres) -> Dict[str, Any]:
     ytmeta['raw'] = jsonres
     ytmeta['id'] = jsonres['id']
     ytmeta['title'] = jsonres['title']
-    ytmeta['description'] = jsonres['description']
+    ytmeta['description'] = jsonres.get('description')
     ytmeta['uploader'] = jsonres['uploader']
     ytmeta['channel_id'] = jsonres['channel_id']
     ytmeta['duration'] = jsonres['duration']
@@ -2253,7 +2282,27 @@ def main_reexec_corruption_check(*, context):
                     print(f'(initial check after reexec) video {video.video_id}: finished, moving status from {video.status} to postlive')
                     video.set_status('postlive')
                     if not has_metafile_status(video=video, status='postlive'):
-                        print(f'warning: video {video.video_id} apparently finished but lacks postlive metafile')
+                        print(f'warning: video {video.video_id} apparently finished but lacks postlive metafile; doing immediate rescrape')
+                        video.rescrape_meta()
+                        if video.status != 'error':
+                            persist_basic_state(video, context=context, clobber=True)
+                        persist_ytmeta(video, fresh=True, clobber=False)
+                    else:
+                        persist_basic_state(video, context=context, clobber=True)
+
+        elif video.progress == 'aborted':
+            if video.status in ['prelive', 'live', 'postlive']:
+                if not has_metafile_status(video=video, status='postlive'):
+                    print(f'warning: video {video.video_id} apparently aborted but lacks postlive metafile; doing immediate rescrape')
+                    video.rescrape_meta()
+                    if video.status != 'error' and video.meta:
+                        persist_basic_state(video, context=context, clobber=True)
+                        video.reset_progress()
+                    else:
+                        video.status = 'error'
+                    persist_ytmeta(video, fresh=True, clobber=False)
+                else:
+                    persist_basic_state(video, context=context, clobber=True)
 
 
 def main_initial_scrape_task(*, context):
