@@ -1085,6 +1085,20 @@ def check_ytmeta_status_correspondence(video: Video):
     return True
 
 
+def get_meta_supp_status(video: Video):
+    """ supplementary status; can be '', 'null', 'incomplete', or 'simple' """
+    if video.rawmeta is None:
+        if not video.meta:
+            return 'null'
+        if video.meta.get('title') is None or video.meta.get('uploader') is None:
+            # probably a failed scrape
+            return 'incomplete'
+        else:
+            return 'simple'
+
+    return ''
+
+
 def persist_ytmeta(video: Video, *, fresh=False, clobber=True):
     """ Persist ytmeta only. """
     metafile = 'by-video-id/' + video.video_id
@@ -1100,12 +1114,13 @@ def persist_ytmeta(video: Video, *, fresh=False, clobber=True):
         metafileyt = metafile + ".meta"
         metafileyt_status = metafileyt + "." + video.status
         if video.rawmeta is None:
-            if video.meta.get('title') is None or video.meta.get('uploader') is None:
-                # probably a failed scrape
-                metafileyt_status += ".incomplete"
-            else:
-                metafileyt_status += ".simple"
+            supp_status = get_meta_supp_status(video)
+            if supp_status:
+                metafileyt_status += "." + supp_status
+
+            if supp_status == 'simple':
                 try:
+                    # FIXME: these values aren't used, so the check is questionable. Not meant for just-loaded 'ytmeta'?
                     status = video.status
                     status_from_ytmeta = ytmeta['ytmeta']['live_status']
                     if check_ytmeta_status_correspondence(video) is False:
@@ -2048,6 +2063,7 @@ def restart():
     global mainpid
     os.chdir('..')
     print(f"{mainpid = }, going away for program restart")
+    print("number of active children: " + str(len(mp.active_children())))   # side effect: joins finished tasks
     os.execl('./scraper_oo.py', './scraper_oo.py')
 
 
@@ -2055,6 +2071,7 @@ def reexec():
     global mainpid
     os.chdir('..')
     print(f"{mainpid = }, going away for program reexec")
+    print("number of active children: " + str(len(mp.active_children())))   # side effect: joins finished tasks
     os.execl('./scraper_oo.py', './scraper_oo.py', 'reexec')
 
 
