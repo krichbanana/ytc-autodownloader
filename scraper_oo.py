@@ -79,6 +79,9 @@ holoscrapecmd = 'wget -nv --load-cookies=../cookies-schedule-hololive-tv.txt htt
 holoscrape_api_cmd = "wget -nv https://schedule.hololive.tv/api/list/1 -O - | jq '[.dateGroupList|.[]|.videoList|.[]|{datetime,isLive,platformType,url,title,name}|select(.platformType == 1)]' >| auto-lives_filt.json"
 
 
+meta_lastresort_keys = {'_raw_player_response', '_raw_info_dict'}
+
+
 # For alt-main usage
 is_true_main = True
 
@@ -748,8 +751,17 @@ class AutoScraper:
             metalist = []
 
             for jsonres in allmeta.readlines():
+                rawjson = None
                 try:
-                    metalist.append(populate_meta_fields_ytdlp(json.loads(jsonres)))
+                    rawjson = json.loads(jsonres)
+                    metalist.append(populate_meta_fields_ytdlp(rawjson))
+                except KeyError:
+                    if rawjson:
+                        ytmeta = {'_raw_info_dict': rawjson}
+                        ytmeta['_scrape_provider'] = 'yt-dlp'
+                        metalist.append(ytmeta)
+                    print(f"warning: channel scrape: missing field in yt-dlp raw info-dict (video_id: {rawjson.get('id')})", file=sys.stderr)
+                    traceback.print_exc()
                 except Exception:
                     if community_scrape:
                         print("warning: exception in channel post scrape task (corrupt meta?)", file=sys.stderr)
@@ -884,6 +896,7 @@ def rescrape_chatdownloader(video: Video, *, channel=None, youtube=None, cookies
             traceback.print_exc()
         # potentially a memory leak
         meta = {"_raw_player_response": player_response}
+        meta['_scrape_provider'] = 'chat_downloader'
 
     if not dubious_status:
         video.set_status(status)
@@ -1282,8 +1295,9 @@ def process_ytmeta(video: Video):
         if video.progress == 'unscraped':
             video.set_progress('missed')
 
-    elif video.meta and '_raw_player_response' in video.meta:
-        print('warning: process_ytmeta failed (_raw_player_response detected, field export failed?)', file=sys.stderr)
+    elif video.meta and meta_lastresort_keys.intersection(video.meta):
+        present_lastresort_keys = meta_lastresort_keys.intersection(video.meta)
+        print(f'warning: process_ytmeta failed ({present_lastresort_keys[0]} detected, field export failed?)', file=sys.stderr)
         return None
 
     else:
@@ -1739,12 +1753,14 @@ def delete_ytmeta_raw(video: Video, *, context: AutoScraper = None, suffix: str 
         print(f'warning: attempting to clear rawmeta for video {video.video_id} without flushing, meta may be lost.', file=sys.stderr)
 
     # unprocessable rawmeta gets saved here as a last resort; we don't want it loaded since it won't be used.
-    if video.meta and '_raw_player_response' in video.meta:
+    if video.meta and meta_lastresort_keys.intersection(video.meta):
         keyname = 'lastresort ytmeta del successes'
         if suffix:
             keyname = keyname + suffix
         general_stats[keyname] = general_stats.setdefault(keyname, 0) + 1
-        del video.meta['_raw_player_response']
+        for lastresort_key in meta_lastresort_keys:
+            if lastresort_key in video.meta:
+                del video.meta[lastresort_key]
 
     # FIXME: I don't see how a KeyError could raise?
     try:
