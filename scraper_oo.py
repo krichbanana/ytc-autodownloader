@@ -19,6 +19,7 @@ from typing import (
 )
 
 from bs4 import BeautifulSoup  # type: ignore
+from urllib3.exceptions import SSLError  # type: ignore
 from chat_downloader import ChatDownloader  # type: ignore
 from chat_downloader.sites import YouTubeChatDownloader  # type: ignore
 from chat_downloader.errors import (  # type: ignore
@@ -689,12 +690,22 @@ class AutoScraper:
                 except UserNotFound:
                     print(f'warning: "User not found" when scraping videos tab via chat_downloader; retries left: {attempts_left}', file=sys.stderr)
 
+                except SSLError:
+                    # a bug in chat_downloader means some optionally-handled exceptions in "requests" are not wrapped in
+                    # requests.exceptions.RequestException but is instead raised by urllib. This mean certain exceptions
+                    # can be unhandled; SSLError is the most common one.
+                    print(f'warning: SSL error when scraping videos tab via chat_downloader; retries left: {attempts_left}', file=sys.stderr)
+
                 except NoVideos:
                     print('warning: "No videos" when scraping videos tab via chat_downloader; not retrying', file=sys.stderr)
                     attempts_left = 0
 
                 else:
-                    attempts_left = 0
+                    break
+
+            else:
+                if attempts_left == 0:  # out of attempts
+                    raise RuntimeError('too many retries on channel scrape with chat_downloader')
 
         channel.end_batch()
 
@@ -1011,7 +1022,21 @@ def invoke_scraper_chatdownloader(video_id: str, *, youtube=None, skip_status=Fa
         youtube = downloader.create_session(YouTubeChatDownloader)
 
     print(f'[scraper chatdownloader]: {video_id = } {cookies = }')
-    video_data, player_response, *_ = youtube._parse_video_data(video_id, params={'max_attempts': 2})
+
+    e = None
+    for _ in range(3):
+        try:
+            video_data, player_response, *_ = youtube._parse_video_data(video_id, params={'max_attempts': 2})
+        except SSLError as se:
+            e = se
+            # a bug in chat_downloader; just retry
+            time.sleep(0.1)
+        else:
+            break
+    try:
+        _ = video_data
+    except (NameError, UnboundLocalError):
+        raise RuntimeError from e
 
     scraper_status: Optional[str] = None
     if not skip_status:
@@ -1923,6 +1948,18 @@ def load_dump():
             for viddict in jsonres:
                 video = Video('XXXXXXXXXXX')
                 video.__dict__ = viddict
+
+                # Before loading the video into our video list, check if we want to filter it out.
+                tmp_context = AutoScraper()
+                recall_video(video.video_id, context=tmp_context, filter_progress=True)
+                tmp_video = tmp_context.lives.get(video.video_id)
+                tmp_metafile_exists = getattr(tmp_video, 'metafile_exists', False)
+                should_filter = tmp_video.meta is None and tmp_metafile_exists
+                if should_filter and video.did_meta_flush:
+                    # filter_progress excluded meta, which means we don't keep to keep this video around.
+                    print(f"(reexec) ignoring video from video dump; meta no longer required and exists on disk (video = {video.video_id})")
+                    continue
+
                 main_autoscraper.lives[video.video_id] = video
     except Exception:
         print('reexec: recalling lives failed.')
