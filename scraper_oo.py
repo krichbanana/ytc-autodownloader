@@ -1077,24 +1077,40 @@ def persist_meta(video: Video, *, context: AutoScraper, fresh=False, clobber=Tru
     persist_ytmeta(video, fresh=fresh, clobber=clobber)
 
 
-def check_ytmeta_status_correspondence(video: Video):
+def convert_scraper_status_to_ytdlp_status(scraper_status: str):
+    raise NotImplementedError
+
+
+def convert_ytdlp_status_to_scraper_status(live_status: str):
+    """ Get equivalent scraper-internal string for known info-dict live_status values.
+        Default is 'unknown'.
+    """
+    if live_status == 'is_live':
+        return 'live'
+    if live_status == 'is_upcoming':
+        return 'prelive'
+    if live_status == 'was_live':
+        return 'postlive'
+    if live_status == 'not_live':
+        return 'upload'
+
+    return 'unknown'
+
+
+def check_ytmeta_status_correspondence(*, status, meta):
     """ Compare live_status meta field to video.status and check if they are equivalent """
-    if not video.meta or video.meta.get('live_status'):
+    if not meta.get('live_status'):
+        # meta may be corrupt or invalid
         return None
 
-    if video.meta.get('title') is None or video.meta.get('uploader') is None:
+    if meta.get('title') is None or meta.get('uploader') is None:
         # probably a failed scrape
         return None
 
     status = video.status
-    status_from_ytmeta = video.meta['live_status']
-    if status_from_ytmeta == 'is_live' and status != 'live' \
-            or status_from_ytmeta == 'is_upcoming' and status != 'prelive' \
-            or status_from_ytmeta == 'was_live' and status != 'postlive' \
-            or status_from_ytmeta == 'not_live' and status != 'upload':
-        return False
-
-    return True
+    live_status = meta['live_status']
+    scraper_status = convert_ytdlp_status_to_scraper_status(live_status)
+    return status == scraper_status
 
 
 def get_meta_supp_status(video: Video):
@@ -1132,10 +1148,9 @@ def persist_ytmeta(video: Video, *, fresh=False, clobber=True):
 
             if supp_status == 'simple':
                 try:
-                    # FIXME: these values aren't used, so the check is questionable. Not meant for just-loaded 'ytmeta'?
                     status = video.status
                     status_from_ytmeta = ytmeta['ytmeta']['live_status']
-                    if check_ytmeta_status_correspondence(video) is False:
+                    if check_ytmeta_status_correspondence(status=status, meta=ytmeta['ytmeta']) is False:
                         print(f'warning: ytmeta does not match expected status: "{status_from_ytmeta}" and "{status}" do not correspond.')
                 except KeyError:
                     print('warning: cannot verify that meta matches the live status')
