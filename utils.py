@@ -112,6 +112,11 @@ def get_timestamp_now():
     return dt.datetime.utcnow().timestamp()
 
 
+def parse_iso8601(text):
+    """ Convert ISO-8601 formatted string to unix timestamp (with micros) """
+    return float(dt.datetime.fromisoformat(text).strftime('%s.%f'))
+
+
 def meta_load_fast(video_id):
     id_prefix = "by-video-id/" + str(video_id)
     if os.path.exists(id_prefix):
