@@ -1107,7 +1107,6 @@ def check_ytmeta_status_correspondence(*, status, meta):
         # probably a failed scrape
         return None
 
-    status = video.status
     live_status = meta['live_status']
     scraper_status = convert_ytdlp_status_to_scraper_status(live_status)
     return status == scraper_status
