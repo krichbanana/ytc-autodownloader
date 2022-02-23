@@ -1296,7 +1296,7 @@ def process_ytmeta(video: Video):
             video.set_progress('missed')
 
     elif video.meta and meta_lastresort_keys.intersection(video.meta):
-        present_lastresort_keys = meta_lastresort_keys.intersection(video.meta)
+        present_lastresort_keys = [x for x in meta_lastresort_keys.intersection(video.meta)]
         print(f'warning: process_ytmeta failed ({present_lastresort_keys[0]} detected, field export failed?)', file=sys.stderr)
         return None
 
