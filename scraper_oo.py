@@ -770,6 +770,18 @@ class AutoScraper:
 
             for ytmeta in metalist:
                 video_id = ytmeta["id"]
+                # Before loading the video into our video list, check if we want to filter it out.
+                tmp_context = AutoScraper()
+                recall_video(video_id, context=tmp_context, filter_progress=True)
+                tmp_video = tmp_context.lives.get(video_id)
+                tmp_metafile_exists = getattr(tmp_video, 'metafile_exists', False)
+                should_filter = tmp_video.meta is None and tmp_metafile_exists
+                if should_filter:
+                    # filter_progress excluded meta, which means we don't keep to keep this video around.
+                    print(f"ignoring video from channel scrape; meta no longer required and exists on disk (video = {video_id})")
+                    continue
+
+                # Likely a new or unfinished video
                 recall_video(video_id, context=self, filter_progress=True)
                 video = self.lives.get(video_id)
                 metafile_exists = getattr(video, 'metafile_exists', False)
