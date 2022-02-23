@@ -59,7 +59,6 @@ except ImportError:
 # Debug switch
 DISABLE_PERSISTENCE = False
 FORCE_RESCRAPE = False
-PERIODIC_SCRAPES = False
 ENABLE_ALTMAIN = False
 ALLOW_COOKIED_COMMUNITY_TAB_SCRAPE = False
 SCRAPER_SLEEP_INTERVAL = 60
@@ -1305,41 +1304,6 @@ def process_ytmeta(video: Video):
         video.set_progress('invalid')
 
 
-def check_periodic_event(video: Video, *, context: AutoScraper):
-    """ Install or run periodic-rescrape handler for a video """
-    try:
-        if video.status == 'prelive':
-            if (id(context.lives[video.video_id]) != id(video)):
-                # The foreach loop in main creates the name video_id that is
-                # not deleted after the loop, which for some incredibly unknown
-                # reason (implicit nonlocal scope/namespace lookup???) defines
-                # the name for functions that are called after the loop.
-                print("what the fuck.")
-                print("lives.....")
-                print(context.lives)
-                sys.exit(1)
-            if video.video_id in context.events:
-                try:
-                    # Don't immediately rescrape if we literally just scraped meta.
-                    # This may still set the check time to a past timestamp if we hadn't just scraped.
-                    next_check = max((video.meta_timestamp + 60 * 5), video.next_event_check)
-                    video.next_event_check = next_check
-                except Exception:
-                    print('warning: periodic rescrape rescheduling failed')
-            else:
-                schedule_periodic_rescrape(video.video_id, context=context)
-
-            if video.video_id not in context.events or len(context.events[video.video_id]) == 0:
-                print('warning: scheduling apparently failed:', video.video_id, file=sys.stderr)
-
-            # If the event check time is in the past, the handler will run.
-            run_periodic_rescrape_handler(video.video_id, context=context)
-
-    except Exception:
-        print('warning: running periodic rescrape event failed:', video.video_id, file=sys.stderr)
-        traceback.print_exc()
-
-
 def maybe_rescrape(video: Video, *, context: AutoScraper):
     saved_progress = video.progress
     if video.progress == 'unscraped':
@@ -1353,9 +1317,6 @@ def maybe_rescrape(video: Video, *, context: AutoScraper):
         # Avoid redundant disk flushes (as long as we presume that the title/description/listing status won't change)
         if saved_progress not in {'missed', 'invalid'} and saved_progress != video.progress:
             persist_meta(video, context=context, fresh=True)
-
-    if PERIODIC_SCRAPES:
-        check_periodic_event(video, context=context)
 
 
 def maybe_rescrape_initially(video: Video, *, context: AutoScraper):
@@ -1384,9 +1345,6 @@ def maybe_rescrape_initially(video: Video, *, context: AutoScraper):
 
     # Redundant, but purges corruption
     persist_meta(video, context=context, fresh=True)
-
-    if PERIODIC_SCRAPES:
-        check_periodic_event(video, context=context)
 
 
 def populate_meta_fields_ytdlp(jsonres) -> Dict[str, Any]:
@@ -1534,111 +1492,6 @@ def safen_path(s):
         print("warning: string safening failed, returning dummy value...")
 
         return ""
-
-
-def schedule_periodic_rescrape(video_id, *, context: AutoScraper):
-    handler_id = 'periodic_rescrape'
-    try:
-        if video_id not in context.lives:
-            print('warning: failed to schedule rescrape: video_id not found:', video_id)
-            return
-
-        def time_func() -> None:
-            print('running time func', video_id)
-            video = context.lives[video_id]
-            meta = meta_load_fast(video_id)
-            if meta is None:
-                print('warning: keep func: fast meta load failed:', video_id)
-            nowtime = get_timestamp_now()
-
-            starttime = None
-            try:
-                starttime = meta_extract_start_timestamp(meta)
-            except Exception:
-                pass
-
-            if starttime is None or starttime - nowtime < 300:
-                # Rescrape next time we check handlers, at least 60 seconds later
-                video.next_event_check = nowtime + 60
-            else:
-                # If more than two hours out, split time in half. Else, do 15min intervals.
-                next_check = (starttime - nowtime) / 2 + starttime
-                if starttime - next_check < 60 * 60 * 2:
-                    next_check = nowtime + 60 * 15
-                video.next_event_check = next_check
-
-        def keep_func() -> bool:
-            print('running keep func', video_id)
-            meta = meta_load_fast(video_id)
-            if meta is None:
-                print('warning: keep func: fast meta load failed:', video_id)
-            raw_status = meta_extract_raw_live_status(meta)
-            # Will remove the handler when the video becomes live; we might change this behavior
-            if raw_status == 'is_upcoming':
-                return True
-
-            if raw_status == 'is_live':
-                print('not keeping anymore (now live)')
-                return False
-
-            print('not keeping anymore (not upcoming or is unscrapeable)')
-            return False
-
-        handler = {'handler_id': handler_id, 'time_func': time_func, 'keep_func': keep_func}
-
-        handlers = context.events.get(video_id)
-        if handlers is not None:
-            reinstall = False
-            for i in range(len(handlers)):
-                h = handlers[i]
-                if h['handler_id'] == handler_id:
-                    print('warning: reinstalling existing with new handler:', handler_id, file=sys.stderr)
-                    handlers[i] = handler
-                    reinstall = True
-                    break
-
-            if not reinstall:
-                handlers.append(handler)
-
-            context.lives[video_id].next_event_check = get_timestamp_now()
-
-        else:
-            context.events[video_id] = [handler]
-            context.lives[video_id].next_event_check = get_timestamp_now()
-
-    except Exception:
-        print('warning: failed to schedule rescrape', file=sys.stderr)
-
-
-def run_periodic_rescrape_handler(video_id, context: AutoScraper):
-    events = context.events
-    handler_id = 'periodic_rescrape'
-    time_now = get_timestamp_now()
-    video = context.lives[video_id]
-    if video.next_event_check > time_now:
-        return
-
-    handler = typing.cast(Dict[str, Callable], None)
-    index = -1
-    for i in range(len(events[video_id])):
-        h = events[video_id][i]
-        if h['handler_id'] == handler_id:
-            handler = h
-            index = i
-            break
-
-    time_func, keep_func = handler['time_func'], handler['keep_func']
-    next_check = time_func()
-
-    # scrape here
-    rescrape_chatdownloader(video)
-    persist_meta(video, context=context, fresh=True, clobber=True)
-
-    video.next_event_check = next_check
-    if not keep_func():
-        del events[video_id][index]
-        video.next_event_check = 0
-        return
 
 
 q: mp.SimpleQueue = mp.SimpleQueue()
@@ -1970,7 +1823,6 @@ def dump_misc(context: AutoScraper, *, dest_dir=DUMP_DIR):
     with open(f"{dest_dir}/staticconfig", "w") as fp:
         print("FORCE_RESCRAPE=" + str(FORCE_RESCRAPE), file=fp)
         print("DISABLE_PERSISTENCE=" + str(DISABLE_PERSISTENCE), file=fp)
-        print("PERIODIC_SCRAPES=" + str(PERIODIC_SCRAPES), file=fp)
         print("SCRAPER_SLEEP_INTERVAL=" + str(SCRAPER_SLEEP_INTERVAL), file=fp)
         print("CHANNEL_SCRAPE_LIMIT=" + str(CHANNEL_SCRAPE_LIMIT), file=fp)
 
