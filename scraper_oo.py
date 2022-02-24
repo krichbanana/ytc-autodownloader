@@ -266,7 +266,7 @@ class AutoScraper:
                     oldlives += 1
                     continue
 
-                recall_video(video_id, context=self, filter_progress=True, id_source='holoschedule:html:disk')
+                recall_video(video_id, context=self, filter_progress=True, id_source='holoschedule:html:disk', disk_only=True)
 
             video = self.get_or_init_video(video_id, id_source='holoschedule:html')
             if video.progress == 'unscraped':
@@ -309,7 +309,7 @@ class AutoScraper:
                     oldlives += 1
                     continue
 
-                recall_video(video_id, context=self, filter_progress=True, id_source='holoschedule:api:disk')
+                recall_video(video_id, context=self, filter_progress=True, id_source='holoschedule:api:disk', disk_only=True)
 
             video = self.get_or_init_video(video_id, id_source='holoschedule:api')
             if video.progress == 'unscraped':
@@ -404,7 +404,7 @@ class AutoScraper:
                             should_filter = False
                             print(f"notice: existing member live: {video_id} on channel {channel_id} (forcibly not filtered!)", flush=True)
                         if not should_filter:
-                            recall_video(video_id, context=self, filter_progress=True, id_source=f'channel:urllist:{word}:disk', referrer_channel_id=channel_id)
+                            recall_video(video_id, context=self, filter_progress=True, id_source=f'channel:urllist:{word}:disk', referrer_channel_id=channel_id, disk_only=True)
 
                     video = self.lives[video_id]
                     channel.add_video(video)
@@ -1275,7 +1275,7 @@ def persist_ytmeta(video: Video, *, fresh=False, clobber=True):
 
 
 # TODO: replace recall_meta with recall_video
-def recall_video(video_id: str, *, context: AutoScraper, filter_progress=False, id_source=None, referrer_channel_id=None):
+def recall_video(video_id: str, *, context: AutoScraper, filter_progress=False, id_source=None, referrer_channel_id=None, disk_only=False):
     """ Read status, progress for video_id.
         If filter_progress is set to True, avoid ytmeta loads for certain progress states,
         unless unconditional rescraping is set.
@@ -1317,6 +1317,11 @@ def recall_video(video_id: str, *, context: AutoScraper, filter_progress=False, 
 
                 except (json.decoder.JSONDecodeError, KeyError):
                     valid_ytmeta = False
+
+    else:
+        if disk_only:
+            # Avoid video instantiation
+            return
 
     # This has to be conditional, unless we want old references to be silently not updated and have tons of debugging follow.
     video = context.get_or_init_video(video_id, id_source=id_source, referrer_channel_id=referrer_channel_id)
