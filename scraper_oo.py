@@ -187,7 +187,7 @@ class AutoScraper:
                 # set difference
                 vanished = (last_batch or set()) - (self.holoschedule_metachannel.batch or set())
                 for video_id in vanished:
-                    video = self.get_or_init_video(video_id)
+                    video = self.get_or_init_video(video_id, id_source='holoschedule:vanished')
                     if video.status in ['prelive', 'live']:
                         if not video.did_meta_flush:
                             persist_meta(video, context=self)
@@ -250,7 +250,7 @@ class AutoScraper:
                 continue
 
             if video_id not in self.lives:
-                recall_video(video_id, context=self, filter_progress=True)
+                recall_video(video_id, context=self, filter_progress=True, id_source='holoschedule:html:disk')
 
             video = self.get_or_init_video(video_id, id_source='holoschedule:html')
             if video.progress == 'unscraped':
@@ -285,7 +285,7 @@ class AutoScraper:
                 continue
 
             if video_id not in self.lives:
-                recall_video(video_id, context=self, filter_progress=True)
+                recall_video(video_id, context=self, filter_progress=True, id_source='holoschedule:api:disk')
 
             video = self.get_or_init_video(video_id, id_source='holoschedule:api')
             if video.progress == 'unscraped':
@@ -793,7 +793,7 @@ class AutoScraper:
                     continue
 
                 # Likely a new or unfinished video
-                recall_video(video_id, context=self, filter_progress=True)
+                recall_video(video_id, context=self, filter_progress=True, id_source='channel:ytdlp_metalist', referrer_channel_id=channel.channel_id)
                 video = self.lives.get(video_id)
                 metafile_exists = getattr(video, 'metafile_exists', False)
                 if video and video.meta is None and not metafile_exists:
@@ -1702,7 +1702,7 @@ def process_one_status(video: Video, *, context: AutoScraper, first=False, just_
         else:
             print(f'forced progress update for video {video.video_id}')
     else:
-        print(f'progress update for video {video.video_id}, reason: {video.progress_flush_reason}')
+        print(f'progress update for video {video.video_id} (source: {video.id_source or "unknown"}; channel: {video.referrer_channel_id or "unknown"}; reason: {video.progress_flush_reason})')
         video.did_progress_print = True
 
     video_id = video.video_id
@@ -2261,7 +2261,7 @@ def main_initial_scrape_task(*, context):
 
         if progress == 'unscraped':
             # Try to load missing meta from disk
-            recall_video(video_id, context=context)
+            recall_video(video_id, context=context, id_source='disk:initial_scrape_task')
 
     # There is a 4-hour explanation for this line, take a guess what happened.
     del video_id, video
@@ -2296,7 +2296,7 @@ def main_scrape_task(*, context):
 
     for video_id in context.pids.copy():
         if video not in context.lives:
-            recall_video(video_id, context=context, filter_progress=True)
+            recall_video(video_id, context=context, filter_progress=True, id_source='disk:scrape_task')
             if video.progress == 'waiting':
                 try:
                     # This may modify our pid list, take care above.
