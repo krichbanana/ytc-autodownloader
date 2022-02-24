@@ -392,8 +392,19 @@ class AutoScraper:
             with open(allurl_file) as urls:
                 for video_id in [f.split(" ")[1].strip() for f in urls.readlines()]:
                     # Process each recent video
+                    should_filter = False
                     if video_id not in self.lives:
-                        recall_video(video_id, context=self, filter_progress=True)
+                        # For now, assume the worst and always load membership videos
+                        should_filter = should_filter_video(video_id)
+                        if is_membership:
+                            word = 'member'
+                        else:
+                            word = 'main'
+                        if should_filter and is_membership:
+                            should_filter = False
+                            print(f"notice: existing member live: {video_id} on channel {channel_id} (forcibly not filtered!)", flush=True)
+                        if not should_filter:
+                            recall_video(video_id, context=self, filter_progress=True, id_source=f'channel:urllist:{word}:disk', referrer_channel_id=channel_id)
 
                     video = self.lives[video_id]
                     channel.add_video(video)
