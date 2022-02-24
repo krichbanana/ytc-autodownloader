@@ -132,6 +132,15 @@ def has_metafile_status(video: Video, status: str):
     return os.path.exists(f'by-video-id/{video.video_id}.meta.{status}') or os.path.exists(f'by-video-id/{video.video_id}.meta.{status}.simple')
 
 
+def should_filter_video(video_id: str):
+    """ Run recall_video on an dummy context to determine if we should exclude loading the video """
+    tmp_context = AutoScraper()
+    recall_video(video_id, context=tmp_context, filter_progress=True)
+    tmp_video = tmp_context.lives.get(video_id)
+    tmp_metafile_exists = getattr(tmp_video, 'metafile_exists', False)
+    return tmp_video.meta is None and tmp_metafile_exists
+
+
 class AutoScraper:
     """ Main context storing videos and other info """
     LAYOUT_VERSION = 1
@@ -236,7 +245,8 @@ class AutoScraper:
         # Find all valid hyperlinks to youtube videos
         soup = get_hololivetv_html()
         newlives = 0
-        knownlives = 0
+        oldlives = 0
+        currentlives = 0
 
         if dlog is None:
             dlog = sys.stdout
@@ -250,6 +260,12 @@ class AutoScraper:
                 continue
 
             if video_id not in self.lives:
+                should_filter = should_filter_video(video_id)
+                if should_filter:
+                    # filter_progress excluded meta, which means we don't keep to keep this video around.
+                    oldlives += 1
+                    continue
+
                 recall_video(video_id, context=self, filter_progress=True, id_source='holoschedule:html:disk')
 
             video = self.get_or_init_video(video_id, id_source='holoschedule:html')
@@ -259,16 +275,18 @@ class AutoScraper:
                     print("discovery: (htmlscrape) new live listed:", video_id, file=sys.stdout, flush=True)
                 newlives += 1
             else:
-                # known (not new) live listed
-                knownlives += 1
+                # known (not new) and current (not old) live listed
+                currentlives += 1
 
         print("discovery: holoschedule: new lives:", str(newlives))
-        print("discovery: holoschedule: known lives:", str(knownlives))
+        print("discovery: holoschedule: current lives:", str(currentlives))
+        print("discovery: holoschedule: old lives:", str(oldlives))
 
     def update_lives_status_holoschedule_api(self, /, *, dlog: IO = None) -> None:
         jsonlist = get_hololivetv_api_json()
         newlives = 0
-        knownlives = 0
+        oldlives = 0
+        currentlives = 0
 
         if dlog is None:
             dlog = sys.stdout
@@ -285,6 +303,12 @@ class AutoScraper:
                 continue
 
             if video_id not in self.lives:
+                should_filter = should_filter_video(video_id)
+                if should_filter:
+                    # filter_progress excluded meta, which means we don't keep to keep this video around.
+                    oldlives += 1
+                    continue
+
                 recall_video(video_id, context=self, filter_progress=True, id_source='holoschedule:api:disk')
 
             video = self.get_or_init_video(video_id, id_source='holoschedule:api')
@@ -294,8 +318,8 @@ class AutoScraper:
                     print(f"discovery: (api) new live listed (live: {is_live}):", video_id, file=sys.stdout, flush=True)
                 newlives += 1
             else:
-                # known (not new) live listed
-                knownlives += 1
+                # known (not new) and current (not old) live listed
+                currentlives += 1
                 if is_live and video.status == 'prelive':
                     rescrape_queue.append(video)
 
@@ -310,7 +334,8 @@ class AutoScraper:
                     persist_ytmeta(video, fresh=True, clobber=True)
 
         print("discovery: holoschedule (api): new lives:", str(newlives))
-        print("discovery: holoschedule (api): known lives:", str(knownlives))
+        print("discovery: holoschedule (api): current lives:", str(currentlives))
+        print("discovery: holoschedule (api): old lives:", str(oldlives))
 
     def update_lives_status_urllist(self, *, dlog: IO = None):
         """ Process a url file (TODO).
@@ -782,11 +807,7 @@ class AutoScraper:
             for ytmeta in metalist:
                 video_id = ytmeta["id"]
                 # Before loading the video into our video list, check if we want to filter it out.
-                tmp_context = AutoScraper()
-                recall_video(video_id, context=tmp_context, filter_progress=True)
-                tmp_video = tmp_context.lives.get(video_id)
-                tmp_metafile_exists = getattr(tmp_video, 'metafile_exists', False)
-                should_filter = tmp_video.meta is None and tmp_metafile_exists
+                should_filter = should_filter_video(video_id)
                 if should_filter:
                     # filter_progress excluded meta, which means we don't keep to keep this video around.
                     print(f"ignoring video from channel scrape; meta no longer required and exists on disk (video = {video_id})")
@@ -1950,11 +1971,7 @@ def load_dump():
                 video.__dict__ = viddict
 
                 # Before loading the video into our video list, check if we want to filter it out.
-                tmp_context = AutoScraper()
-                recall_video(video.video_id, context=tmp_context, filter_progress=True)
-                tmp_video = tmp_context.lives.get(video.video_id)
-                tmp_metafile_exists = getattr(tmp_video, 'metafile_exists', False)
-                should_filter = tmp_video.meta is None and tmp_metafile_exists
+                should_filter = should_filter_video(video.video_id)
                 if should_filter and video.did_meta_flush:
                     # filter_progress excluded meta, which means we don't keep to keep this video around.
                     print(f"(reexec) ignoring video from video dump; meta no longer required and exists on disk (video = {video.video_id})")
