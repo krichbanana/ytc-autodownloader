@@ -363,7 +363,7 @@ class AutoScraper:
         except Exception:
             print(f"warning: unexpected error with processing {channels_file}", file=sys.stderr)
             traceback.print_exc()
-            for channel in self.channels.values(()):
+            for channel in self.channels.values():
                 if channel.batching:
                     print("warning: batching in progress, resetting:", channel_id, file=sys.stderr)
                     print("last batch:", channel_id, file=sys.stderr)
@@ -405,6 +405,8 @@ class AutoScraper:
                             print(f"notice: existing member live: {video_id} on channel {channel_id} (forcibly not filtered!)", flush=True)
                         if not should_filter:
                             recall_video(video_id, context=self, filter_progress=True, id_source=f'channel:urllist:{word}:disk', referrer_channel_id=channel_id, disk_only=True)
+                        else:
+                            continue
 
                     video = self.lives[video_id]
                     channel.add_video(video)
