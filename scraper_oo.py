@@ -153,7 +153,8 @@ class AutoScraper:
         self.pids = {}
         self.general_stats = {}  # for debugging
         self.init_timestamp = get_timestamp_now()
-        self.holoschedule_metachannel = Channel('holoschedule')
+        self.holoschedule_metachannel = Channel('holoschedule', is_metachannel=True)
+        self.urllist_metachannel = Channel('urllist', is_metachannel=True)
 
     def get_or_init_video(self, /, video_id, *, id_source=None, referrer_channel_id=None):
         video = None
@@ -176,7 +177,7 @@ class AutoScraper:
                     last_batch = self.holoschedule_metachannel.batch
                 except AttributeError:
                     # format migration
-                    last_batch = self.holoschedule_metachannel = Channel('holoschedule')
+                    last_batch = self.holoschedule_metachannel = Channel('holoschedule', is_metachannel=True)
 
                 self.holoschedule_metachannel.start_batch()
 
@@ -339,11 +340,14 @@ class AutoScraper:
         print("discovery: holoschedule (api): old lives:", str(oldlives))
 
     def update_lives_status_urllist(self, *, dlog: IO = None):
-        """ Process a url file (TODO).
+        """ Process a url file (currently only supports raw video IDs)
             Can be called standalone.
         """
-        # TODO
-        ch = Channel('UCchannel_id')
+        try:
+            ch = self.urllist_metachannel
+        except AttributeError:
+            # format migration
+            ch = self.urllist_metachannel = Channel('urllist', is_metachannel=True)
         self.process_urllist_videos(channel=ch, dlog=dlog)
 
     def update_lives_status_channellist(self, *, dlog: IO = None, is_membership=False) -> None:
@@ -511,7 +515,7 @@ class AutoScraper:
                         persist_ytmeta(video, fresh=True)
 
         except IOError:
-            print("warning: unexpected I/O error when processing channel scrape results", file=sys.stderr)
+            print("warning: unexpected I/O error when processing urllist scrape results", file=sys.stderr)
             traceback.print_exc()
 
         channel.end_batch()

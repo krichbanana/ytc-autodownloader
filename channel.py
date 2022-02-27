@@ -8,8 +8,9 @@ from video import (
 
 class BaseChannel:
     """ Tracks basic details about a channel, such as the videos that belong to it. """
-    def __init__(self, channel_id):
+    def __init__(self, channel_id, *, is_metachannel=False):
         self.channel_id = channel_id
+        self.is_metachannel = is_metachannel
         self.videos = set()
         self.init_timestamp = get_timestamp_now()
         self.modify_timestamp = self.init_timestamp
