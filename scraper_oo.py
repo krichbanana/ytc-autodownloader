@@ -15,7 +15,8 @@ from typing import (
     Dict,
     IO,
     Optional,
-    Set
+    Set,
+    Tuple
 )
 
 from bs4 import BeautifulSoup  # type: ignore
@@ -371,8 +372,60 @@ class AutoScraper:
                     print(channel.batch, file=sys.stderr)
                     channel.clear_batch()
 
-    def process_urllist_videos(self, /, channel: Channel, *, dlog: IO = None, is_membership=False):
-        """ Read scraped channel video list, proccess each video ID, and persist the meta state. """
+    def _videolist_rescrape_uncached_meta(self, /, video: Video, *, origin: str, is_membership, channel: Channel) -> Tuple[bool, bool]:
+        """ If no precached meta (from yt-dlp or another source), then rescrape.
+            Return whether a lack of meta was discovered, and whether the scrape failed.
+        """
+        if video.meta is not None:
+            return (False, False)
+
+        metafile_exists = getattr(video, 'metafile_exists', False)
+        cache_miss = False
+        video_id = video.video_id
+
+        vid_type_info = 'video'
+        if is_membership:
+            vid_type_info = 'member video'
+
+        if origin == 'channellist':
+            origin_text = 'channel'
+            supp_info = f'for {vid_type_info} {video_id} on channel {channel.channel_id} ({metafile_exists = })'
+        elif origin == 'urllist':
+            origin_text = 'urllist'
+            supp_info = f'for {vid_type_info} {video_id} via urllist ({metafile_exists = })'
+        else:
+            raise RuntimeError('invalid origin specified for videolist helper')
+
+        if not is_membership:
+            # We may be reloading old URLs after a program restart
+            print('ytmeta cache miss', supp_info)
+            if not metafile_exists:
+                cache_miss = True
+                rescrape(video)
+                if video.meta is None:
+                    # scrape failed
+                    return (cache_miss, True)
+                video.rawmeta = video.meta.get('raw')
+                video.did_meta_flush = False
+                video.meta_flush_reason = f'new meta (yt-dlp source, {origin_text} task origin, after cache miss)'
+        else:
+            print('ytmeta missing', supp_info)
+            if not metafile_exists:
+                rescrape(video, cookies=_get_member_cookie_file(channel.channel_id))
+                if video.meta is None:
+                    if not video.did_meta_flush:
+                        print(f"warning: didn't flush meta for {origin_text} {vid_type_info}; flushing now", file=sys.stderr)
+                        persist_ytmeta(video, fresh=True)
+                    # scrape failed
+                    return (cache_miss, True)
+                video.rawmeta = video.meta.get('raw')
+                video.did_meta_flush = False
+                video.meta_flush_reason = f'new meta (yt-dlp source, {origin_text} task origin, after cache miss (cookied))'
+
+        return (cache_miss, False)
+
+    def process_urllist_videos(self, /, channel: Channel, *, dlog: IO = None, is_membership=False) -> None:
+        """ Read user-specified video ID list, process each video ID, and persist the meta state. """
         if dlog is None:
             dlog = sys.stdout
 
@@ -439,35 +492,9 @@ class AutoScraper:
 
                         continue
 
-                    cache_miss = False
-                    metafile_exists = getattr(video, 'metafile_exists', False)
-
-                    # process precached meta
-                    if video.meta is None and not is_membership:
-                        # We may be reloading old URLs after a program restart
-                        print(f'ytmeta cache miss for video {video_id} via urllist ({metafile_exists = })')
-                        if not metafile_exists:
-                            cache_miss = True
-                            rescrape(video)
-                            if video.meta is None:
-                                # scrape failed
-                                continue
-                            video.rawmeta = video.meta.get('raw')
-                            video.did_meta_flush = False
-                            video.meta_flush_reason = 'new meta (yt-dlp source, urllist task origin, after cache miss)'
-                    elif video.meta is None:
-                        print(f'ytmeta missing for member video {video_id} on urllist {metafile_exists = })')
-                        if not metafile_exists:
-                            rescrape(video)
-                            if video.meta is None:
-                                if not video.did_meta_flush:
-                                    print("warning: didn't flush meta for urllist member video; flushing now", file=sys.stderr)
-                                    persist_ytmeta(video, fresh=True)
-                                # scrape failed
-                                continue
-                            video.rawmeta = video.meta.get('raw')
-                            video.did_meta_flush = False
-                            video.meta_flush_reason = 'new meta (yt-dlp source, urllist task origin, after cache miss (cookied))'
+                    cache_miss, scrape_failed = self._videolist_rescrape_uncached_meta(video, origin='urllist', is_membership=is_membership, channel=channel)
+                    if scrape_failed:
+                        continue
 
                     # There's an optimization opportunity for reducing disk flushes here, but we forego it
 
@@ -498,8 +525,8 @@ class AutoScraper:
         channel.clear_batch()
 
     # TODO: rewrite
-    def process_channel_videos_ytdlp(self, /, channel: Channel, *, dlog: IO = None, is_membership=False):
-        """ Read scraped channel video list, proccess each video ID, and persist the meta state. """
+    def process_channel_videos_ytdlp(self, /, channel: Channel, *, dlog: IO = None, is_membership=False) -> None:
+        """ Read scraped channel video list, process each video ID, and persist the meta state. """
         if dlog is None:
             dlog = sys.stdout
 
@@ -569,35 +596,9 @@ class AutoScraper:
 
                         continue
 
-                    cache_miss = False
-                    metafile_exists = getattr(video, 'metafile_exists', False)
-
-                    # process precached meta
-                    if video.meta is None and not is_membership:
-                        # We may be reloading old URLs after a program restart
-                        print(f'ytmeta cache miss for video {video_id} on channel {channel_id} ({metafile_exists = })')
-                        if not metafile_exists:
-                            cache_miss = True
-                            rescrape(video)
-                            if video.meta is None:
-                                # scrape failed
-                                continue
-                            video.rawmeta = video.meta.get('raw')
-                            video.did_meta_flush = False
-                            video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin, after cache miss)'
-                    elif video.meta is None:
-                        print(f'ytmeta missing for member video {video_id} on channel {channel_id} ({metafile_exists = })')
-                        if not metafile_exists:
-                            rescrape(video, cookies=_get_member_cookie_file(channel_id))
-                            if video.meta is None:
-                                if not video.did_meta_flush:
-                                    print("warning: didn't flush meta for channel member video; flushing now", file=sys.stderr)
-                                    persist_ytmeta(video, fresh=True)
-                                # scrape failed
-                                continue
-                            video.rawmeta = video.meta.get('raw')
-                            video.did_meta_flush = False
-                            video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin, after cache miss (cookied))'
+                    cache_miss, scrape_failed = self._videolist_rescrape_uncached_meta(video, origin='channellist', is_membership=is_membership, channel=channel)
+                    if scrape_failed:
+                        continue
 
                     # There's an optimization opportunity for reducing disk flushes here, but we forego it
 
