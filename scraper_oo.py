@@ -342,7 +342,8 @@ class AutoScraper:
             Can be called standalone.
         """
         # TODO
-        pass
+        ch = Channel('UCchannel_id')
+        self.process_urllist_videos(channel=ch, dlog=dlog)
 
     def update_lives_status_channellist(self, *, dlog: IO = None, is_membership=False) -> None:
         """ Read channels.txt for a list of channel IDs to process. """
@@ -369,6 +370,132 @@ class AutoScraper:
                     print("last batch:", channel_id, file=sys.stderr)
                     print(channel.batch, file=sys.stderr)
                     channel.clear_batch()
+
+    def process_urllist_videos(self, /, channel: Channel, *, dlog: IO = None, is_membership=False):
+        """ Read scraped channel video list, proccess each video ID, and persist the meta state. """
+        if dlog is None:
+            dlog = sys.stdout
+
+        newlives = 0
+        knownlives = 0
+        numignores: Dict = {}
+        channel.did_discovery_print = True
+
+        allurl_file = "video_ids.txt"
+
+        channel.start_batch()
+
+        try:
+            with open(allurl_file) as urls:
+                for video_id in [f.split(" ")[0].strip() for f in urls.readlines()]:
+                    # Process each recent video
+                    should_filter = False
+                    if video_id not in self.lives:
+                        # For now, assume the worst and always load membership videos
+                        should_filter = should_filter_video(video_id)
+                        if is_membership:
+                            word = 'member'
+                        else:
+                            word = 'main'
+                        if should_filter and is_membership:
+                            should_filter = False
+                            print(f"notice: existing member live: {video_id} on urllist (forcibly not filtered!)", flush=True)
+                        if not should_filter:
+                            recall_video(video_id, context=self, filter_progress=True, id_source=f'urllist:urllist:{word}:disk', disk_only=True)
+                        else:
+                            continue
+
+                    video = self.lives[video_id]
+                    channel.add_video(video)
+
+                    if not channel.did_discovery_print:
+                        metastatus_ok = video.meta is not None
+                        if not metastatus_ok:
+                            if is_membership:
+                                word = 'member'
+                            else:
+                                word = 'main'
+                            recall_video(video_id, context=self, filter_progress=True, id_source=f'urllist:urllist:{word}')
+                        metastatus_ok = video.meta is not None
+                        metafile_exists = getattr(video, 'metafile_exists', False)
+                        if metafile_exists:
+                            # avoid 'extra' rescrapes based on status
+                            video.did_status_print = True
+                        print(f"discovery: new live listed: {video_id} on urllist (meta loaded: {metastatus_ok}; metafile exists: {metafile_exists})", file=dlog, flush=True)
+                        # TODO: accumulate multiple videos at once.
+                        channel.did_discovery_print = True
+                        newlives += 1
+                    else:
+                        # known (not new) live listed (channel unaware)
+                        knownlives += 1
+
+                    saved_progress = video.progress
+
+                    if not FORCE_RESCRAPE and saved_progress in {'downloaded', 'missed', 'invalid', 'aborted'}:
+                        numignores[saved_progress] = numignores.setdefault(saved_progress, 0) + 1
+
+                        # meta likely won't be loaded for this to have too much effect, if filter_progress was set when recalling.
+                        delete_ytmeta_raw(video, context=self, suffix=" (urllist)")
+
+                        continue
+
+                    cache_miss = False
+                    metafile_exists = getattr(video, 'metafile_exists', False)
+
+                    # process precached meta
+                    if video.meta is None and not is_membership:
+                        # We may be reloading old URLs after a program restart
+                        print(f'ytmeta cache miss for video {video_id} via urllist ({metafile_exists = })')
+                        if not metafile_exists:
+                            cache_miss = True
+                            rescrape(video)
+                            if video.meta is None:
+                                # scrape failed
+                                continue
+                            video.rawmeta = video.meta.get('raw')
+                            video.did_meta_flush = False
+                            video.meta_flush_reason = 'new meta (yt-dlp source, urllist task origin, after cache miss)'
+                    elif video.meta is None:
+                        print(f'ytmeta missing for member video {video_id} on urllist {metafile_exists = })')
+                        if not metafile_exists:
+                            rescrape(video)
+                            if video.meta is None:
+                                if not video.did_meta_flush:
+                                    print("warning: didn't flush meta for urllist member video; flushing now", file=sys.stderr)
+                                    persist_ytmeta(video, fresh=True)
+                                # scrape failed
+                                continue
+                            video.rawmeta = video.meta.get('raw')
+                            video.did_meta_flush = False
+                            video.meta_flush_reason = 'new meta (yt-dlp source, urllist task origin, after cache miss (cookied))'
+
+                    # There's an optimization opportunity for reducing disk flushes here, but we forego it
+
+                    # has parity with maybe_rescrape(); should only need to be called on new videos
+                    if video.progress == 'unscraped':
+                        process_ytmeta(video)
+
+                    # has parity with maybe_rescrape() as well
+                    if cache_miss or (saved_progress not in {'missed', 'invalid'} and saved_progress != video.progress):
+                        persist_meta(video, context=self, fresh=True)
+
+                    if not video.did_meta_flush:
+                        print("warning: didn't flush meta for urllist video; flushing now", file=sys.stderr)
+                        persist_ytmeta(video, fresh=True)
+
+        except IOError:
+            print("warning: unexpected I/O error when processing channel scrape results", file=sys.stderr)
+            traceback.print_exc()
+
+        channel.end_batch()
+
+        if len(channel.batch) > 0:
+            print("discovery: channels list: new lives on urllist: " + str(newlives))
+            print("discovery: channels list: known lives on urllist: " + str(knownlives))
+            for progress, count in numignores.items():
+                print("discovery: channels list: skipped ytmeta fetches on urllist: " + str(count) + " skipped due to progress state '" + progress + "'")
+
+        channel.clear_batch()
 
     # TODO: rewrite
     def process_channel_videos_ytdlp(self, /, channel: Channel, *, dlog: IO = None, is_membership=False):
