@@ -363,8 +363,21 @@ class AutoScraper:
         try:
             if os.path.exists(channels_file):
                 with open(channels_file) as channellist:
-                    for channel_id in [x.strip().split()[0] for x in channellist.readlines()]:
-                        self.scrape_and_process_channel(channel_id=channel_id, dlog=dlog)
+                    for line in channellist.readlines():
+                        # ';' is comment leader
+                        if not line or line.strip().startswith(';'):
+                            continue
+
+                        channel_info = line.split(';', 2)[0].split()
+                        if len(channel_info) == 1:
+                            channel_id, throttle = channel_info[0], 300.0
+                        elif len(channel_info) == 2:
+                            channel_id, throttle = channel_info
+                        else:
+                            print('warning: line from channels file has too many values', file=sys.stderr)
+                            continue
+
+                        self.scrape_and_process_channel(channel_id=channel_id, dlog=dlog, throttle=throttle)
 
         except Exception:
             print(f"warning: unexpected error with processing {channels_file}", file=sys.stderr)
@@ -638,6 +651,7 @@ class AutoScraper:
         """
         channel = None
         use_ytdlp = False
+        throttle = float(throttle)
 
         if dlog is None:
             dlog = sys.stdout
