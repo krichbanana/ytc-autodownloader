@@ -179,6 +179,13 @@ class AutoScraper:
                     # format migration
                     last_batch = self.holoschedule_metachannel = Channel('holoschedule', is_metachannel=True)
 
+                ch = self.holoschedule_metachannel
+                if ch.batching:
+                    print("warning: batching in progress (holoschedule), resetting:", ch.channel_id, file=sys.stderr)
+                    print("last batch:", ch.channel_id, file=sys.stderr)
+                    print(ch.batch, file=sys.stderr)
+                    ch.clear_batch()
+
                 self.holoschedule_metachannel.start_batch()
 
                 try:
@@ -348,6 +355,13 @@ class AutoScraper:
         except AttributeError:
             # format migration
             ch = self.urllist_metachannel = Channel('urllist', is_metachannel=True)
+
+        if ch.batching:
+            print("warning: batching in progress (urllist), resetting:", ch.channel_id, file=sys.stderr)
+            print("last batch:", ch.channel_id, file=sys.stderr)
+            print(ch.batch, file=sys.stderr)
+            ch.clear_batch()
+
         self.process_urllist_videos(channel=ch, dlog=dlog)
 
     def update_lives_status_channellist(self, *, dlog: IO = None, is_membership=False) -> None:
@@ -475,7 +489,12 @@ class AutoScraper:
                         else:
                             continue
 
-                    video = self.lives[video_id]
+                    video = self.lives.get(video_id)
+                    if not video:
+                        print(f'warning: video not loaded, skipping: {video_id}', file=sys.stderr)
+                        # this will screw up our counters but it's better than skipping the loop
+                        continue
+
                     channel.add_video(video)
 
                     if not channel.did_discovery_print:
@@ -579,7 +598,12 @@ class AutoScraper:
                         else:
                             continue
 
-                    video = self.lives[video_id]
+                    video = self.lives.get(video_id)
+                    if not video:
+                        print(f'warning: video not loaded, skipping: {video_id}', file=sys.stderr)
+                        # this will screw up our counters but it's better than skipping the loop
+                        continue
+
                     channel.add_video(video)
 
                     if not channel.did_discovery_print:
