@@ -534,10 +534,10 @@ class AutoScraper:
         channel.end_batch()
 
         if len(channel.batch) > 0:
-            print("discovery: channels list: new lives on urllist: " + str(newlives))
-            print("discovery: channels list: known lives on urllist: " + str(knownlives))
+            print("discovery: video id list: new lives on urllist: " + str(newlives))
+            print("discovery: video id list: known lives on urllist: " + str(knownlives))
             for progress, count in numignores.items():
-                print("discovery: channels list: skipped ytmeta fetches on urllist: " + str(count) + " skipped due to progress state '" + progress + "'")
+                print("discovery: video id list: skipped ytmeta fetches on urllist: " + str(count) + " skipped due to progress state '" + progress + "'")
 
         channel.clear_batch()
 
