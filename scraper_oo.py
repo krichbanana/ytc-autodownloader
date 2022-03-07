@@ -386,7 +386,7 @@ class AutoScraper:
                         if len(channel_info) == 1:
                             channel_id, throttle = channel_info[0], 300.0
                         elif len(channel_info) == 2:
-                            channel_id, throttle = channel_info
+                            channel_id, throttle = channel_info[0], float(channel_info[1])
                         else:
                             print('warning: line from channels file has too many values', file=sys.stderr)
                             continue
