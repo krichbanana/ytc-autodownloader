@@ -1303,7 +1303,10 @@ def persist_basic_state(video: Video, *, context: AutoScraper, clobber=True, clo
         clobber_pid = clobber
 
     if clobber or not os.path.exists(statefile):
-        print('Updating statefile ' + statefile)
+        action = 'Updating'
+        if not clobber or not os.path.exists(statefile):
+            action = 'Creating'
+        print(f'{action} statefile {statefile}')
         with open(statefile, 'wb') as fp:
             fp.write(json.dumps(state, indent=1).encode())
 
@@ -1422,7 +1425,10 @@ def persist_ytmeta(video: Video, *, fresh=False, clobber=True):
 
         try:
             if clobber or not os.path.exists(metafileyt):
-                print('Updating ' + metafileyt)
+                action = 'Updating'
+                if not clobber or not os.path.exists(metafileyt):
+                    action = 'Creating'
+                print(f'{action} {metafileyt}')
                 with open(metafileyt, 'wb') as fp:
                     fp.write(json.dumps(ytmeta, indent=1).encode())
 
@@ -1442,7 +1448,10 @@ def persist_ytmeta(video: Video, *, fresh=False, clobber=True):
                     if os.path.exists(bugtest2) and metafileyt_status == bugtest1:
                         raise RuntimeError(f'illegal meta write (bug): {metafileyt_status} written after {bugtest2})')
 
-                    print('Updating ' + metafileyt_status)
+                    action = 'Updating'
+                    if not clobber or not os.path.exists(metafileyt_status):
+                        action = 'Creating'
+                    print(f'{action} {metafileyt_status}')
                     with open(metafileyt_status, 'wb') as fp:
                         fp.write(json.dumps(ytmeta, indent=1).encode())
                 except RuntimeError:
