@@ -44,8 +44,7 @@ from video import (
     BaseVideo,
     TransitionException,
     statuses,
-    progress_statuses,
-    write_counter_values
+    progress_statuses
 )
 from channel import (
     BaseChannel
@@ -168,8 +167,11 @@ class AutoScraper:
         return video
 
     def update_lives_status(self, /):
+        self.update_lives_status_fast_source()
+        self.update_lives_status_slow_source()
+
+    def update_lives_status_fast_source(self, /):
         if not is_true_main:
-            self.update_lives_status_cookied()
             return
 
         with open("discovery.txt", "a") as dlog:
@@ -237,6 +239,12 @@ class AutoScraper:
                 print("warning: exception during urllist scrape. Network error?")
                 traceback.print_exc()
 
+    def update_lives_status_slow_source(self, /):
+        if not is_true_main:
+            self.update_lives_status_cookied()
+            return
+
+        with open("discovery.txt", "a") as dlog:
             try:
                 self.update_lives_status_channellist(dlog=dlog)
             except Exception:
@@ -922,7 +930,7 @@ class AutoScraper:
             if video_id not in self.lives:
                 # Don't create new video objects needlessly, else they will be rescraped.
                 continue
-            video = self.get_or_init_video(video_id, id_source='channel:across', referrer_channel_id=channel.channel_id)
+            video = self.get_or_init_video(video_id, id_source='channel:hint', referrer_channel_id=channel.channel_id)
             if video.status == 'prelive' and status_hint == 'live' \
                     or video.status in ['prelive', 'live'] and status_hint == 'postlive':
                 # Existing videos will not see the suggestion to rescrape since the tab loop skips the processing for them.
@@ -1299,6 +1307,8 @@ def persist_basic_state(video: Video, *, context: AutoScraper, clobber=True, clo
     state = {}
     state['status'] = video.status
     state['progress'] = video.progress
+    state['_prefinal_status'] = getattr(video, '_prefinal_status', None)
+    state['_prefinal_progress'] = getattr(video, '_prefinal_progress', None)
 
     if clobber_pid is None:
         clobber_pid = clobber
@@ -1503,6 +1513,7 @@ def recall_video(video_id: str, *, context: AutoScraper, filter_progress=False, 
     metafile = 'by-video-id/' + video_id
     metafileyt = metafile + ".meta"
     valid_meta = os.path.exists(metafile)
+    valid_extmeta = valid_meta
     valid_ytmeta = os.path.exists(metafileyt)
     meta = typing.cast(Dict[str, str], None)
     ytmeta = typing.cast(Dict[str, Dict[str, Any]], None)
@@ -1514,16 +1525,26 @@ def recall_video(video_id: str, *, context: AutoScraper, filter_progress=False, 
             try:
                 meta = json.loads(fp.read())
                 valid_meta = meta['status'] in statuses and meta['progress'] in progress_statuses
+                valid_extmeta = meta.get('_prefinal_status') is not None and meta.get('_prefinal_progress') is not None
+                valid_extmeta = valid_extmeta and meta['_prefinal_status'] in statuses and meta['_prefinal_progress'] in progress_statuses
 
             except (json.decoder.JSONDecodeError, KeyError):
                 print(f'warning: program meta failed to load even though the file exists: {video_id}', file=sys.stderr)
                 valid_meta = False
+                valid_extmeta = False
 
         # Reduce memory usage by not loading ytmeta for undownloadable videos
         if valid_meta and filter_progress:
             should_ignore = meta['status'] in {'postlive', 'upload'} and meta['progress'] != 'unknown'
             should_ignore = should_ignore or meta['progress'] in {'downloaded', 'missed', 'invalid'}
             should_ignore = should_ignore or meta['status'] == 'error' and meta['progress'] == 'aborted'
+
+        if valid_extmeta and filter_progress:
+            if meta['_prefinal_status'] == 'prelive' and meta['_prefinal_progress'] in ['downloading', 'downloaded']:
+                if should_ignore:
+                    print(f'warning: loading meta we were supposed to ignore due to prefinal status: {video_id}: {meta}', file=sys.stderr)
+
+                should_ignore = False
 
         # note: FORCE_RESCRAPE might clobber old ytmeta if not loaded (bad if the video drastically changes or goes unavailable)
         if valid_ytmeta and not should_ignore:
@@ -1949,7 +1970,12 @@ def process_one_status(video: Video, *, context: AutoScraper, first=False, just_
         # Rescrape meta for saving, even though we don't really need it.
         if video.status in ['live', 'postlive']:
             if not os.path.exists(f'by-video-id/{video.video_id}.meta.{video.status}'):
-                rescrape_chatdownloader(video)
+                try:
+                    rescrape_chatdownloader(video)
+                except (RuntimeError, OSError):
+                    print("rescrape_chatdownloader raised an error", file=sys.stderr)
+                    traceback.print_exc()
+                    raise
 
     # Process only on change
     if video.did_progress_print:
@@ -2043,7 +2069,7 @@ def process_one_status(video: Video, *, context: AutoScraper, first=False, just_
             try:
                 details = youtube.get_video_data(video_id, params={'max_attempts': 3})
             except Exception:
-                pass
+                traceback.print_exc()
 
             if details and details.get('status') in {'live', 'upcoming'}:
                 print("warning: downloader seems to have exited prematurely. reinvoking:", video_id, file=sys.stderr)
@@ -2059,8 +2085,14 @@ def process_one_status(video: Video, *, context: AutoScraper, first=False, just_
 
             else:
                 print("downloader complete:", video_id, file=sys.stderr)
-                video.set_progress('downloaded')
-                video.set_status('postlive')  # a safe assumption
+                video._prefinal_status = video.status
+                video._prefinal_progress = video.progress
+                if details:
+                    video.set_progress('downloaded')
+                    video.set_status('postlive')  # a safe assumption
+                else:
+                    video.set_progress('aborted')
+                    video.set_status('error')
 
                 try:
                     del context.pids[video_id]
@@ -2476,11 +2508,12 @@ def main_reexec_corruption_check(*, context):
                 video.reset_progress()
 
         elif video.progress == 'downloaded':
-            if video.status in ['prelive', 'live']:
+            if video.status in ['prelive', 'live', 'postlive']:
                 crashed = did_crash(video)
                 if not crashed:
-                    print(f'(initial check after reexec) video {video.video_id}: finished, moving status from {video.status} to postlive')
-                    video.set_status('postlive')
+                    if video.status != 'postlive':
+                        print(f'(initial check after reexec) video {video.video_id}: finished, moving status from {video.status} to postlive')
+                        video.set_status('postlive')
                     if not has_metafile_status(video=video, status='postlive'):
                         print(f'warning: video {video.video_id} apparently finished but lacks postlive metafile; doing immediate rescrape')
                         video.rescrape_meta()
@@ -2489,6 +2522,12 @@ def main_reexec_corruption_check(*, context):
                         persist_ytmeta(video, fresh=True, clobber=False)
                     else:
                         persist_basic_state(video, context=context, clobber=True)
+                else:
+                    print(f'(initial check after reexec) video {video.video_id}: downloader reportedly crashed (status {video.status}, progress {video.progress}); resetting')
+                    video._prefinal_status = video.status
+                    video._prefinal_progress = video.progress
+                    video.reset_status()
+                    video.reset_progress()
 
         elif video.progress == 'aborted':
             if video.status in ['prelive', 'live', 'postlive']:
@@ -2499,14 +2538,22 @@ def main_reexec_corruption_check(*, context):
                         persist_basic_state(video, context=context, clobber=True)
                         video.reset_progress()
                     else:
+                        video._prefinal_status = video.status
                         video.status = 'error'
                     persist_ytmeta(video, fresh=True, clobber=False)
                 else:
                     persist_basic_state(video, context=context, clobber=True)
+            if video.status == 'error':
+                if getattr(video, '_prefinal_status', None) in ['prelive', 'live']:
+                    print(f'(initial check after reexec) video {video.video_id} status is error on reexec, rescraping.')
+                    video.rescrape_meta()
+                    if video.status != 'error':
+                        persist_basic_state(video, context=context, clobber=True)
+                    persist_ytmeta(video, fresh=True, clobber=False)
 
 
 def main_initial_scrape_task(*, context):
-    """ Task run before the main loop starts"""
+    """ Task run before the main loop starts """
     # Populate cache from disk
     for video_id, video in context.lives.items():
         progress = video.progress
@@ -2535,25 +2582,20 @@ def main_initial_scrape_task(*, context):
             raise
 
 
-def main_scrape_task(*, context):
-    """ Task for each iteration of the main loop, without added delay. """
-    context.update_lives_status()
-
-    # Try to make sure downloaders are tracked with correct state
-    process_dlpid_queue(context=context)
-
-    # Scrape each video again if needed
-    for video in context.lives.values():
-        maybe_rescrape(video, context=context)
-
+def main_progress_preload_and_check_waiting(*, context):
+    """ Load missing videos from disk and check for the new download process (broken?) """
     for video_id in context.pids.copy():
-        if video not in context.lives:
+        # This was completely broken before (random 'video' in if) so who knows if this method is needed
+        if video_id not in context.lives:
+            # FIXME: if we actually recalled a video here during the looped task, the progress wouldn't be waiting, would it?
             recall_video(video_id, context=context, filter_progress=True, id_source='disk:scrape_task')
+            video = context.get_or_init_video(video_id, id_source='scrape_task')
             if video.progress == 'waiting':
                 try:
                     # This may modify our pid list, take care above.
                     try:
                         (pypid, dlpid) = context.pids[video.video_id]
+                        # TODO: why only waiting->downloading here?
                         if not check_pid(dlpid):
                             process_one_status(video, context=context, force=True)
 
@@ -2562,9 +2604,14 @@ def main_scrape_task(*, context):
 
                 except ChatDownloaderError:
                     print('warning: main scrape task, pids check: process_one_status threw an error from chat_downloader.', file=sys.stderr)
+                    traceback.print_exc()
                 except OSError:
                     print('warning: main scrape task, pids check: process_one_status threw an error from the OS.', file=sys.stderr)
+                    traceback.print_exc()
 
+
+def main_progress_advancement(*, context):
+    """ Progress flagged updates set by process_one_status """
     for video in context.lives.values():
         # while there is a duplication of effort here, we need to advance the progress once somehow...
         if not video.did_progress_print or not video.did_status_print:
@@ -2572,9 +2619,12 @@ def main_scrape_task(*, context):
                 process_one_status(video, context=context)
             except ChatDownloaderError:
                 print('warning: main scrape task, progress check: process_one_status threw an error from chat_downloader.', file=sys.stderr)
+                traceback.print_exc()
             except OSError:
                 print('warning: main scrape task, progress check: process_one_status threw an error from the OS.', file=sys.stderr)
+                traceback.print_exc()
         elif video.progress == 'downloading':
+            # Check download progress for (possibly premature) downloader exit
             try:
                 (pypid, dlpid) = context.pids[video.video_id]
                 if not check_pid(dlpid):
@@ -2582,14 +2632,17 @@ def main_scrape_task(*, context):
 
             except ChatDownloaderError:
                 print('warning: main scrape task, progress check invoking pid check: process_one_status threw an error from chat_downloader.', file=sys.stderr)
+                traceback.print_exc()
 
             except OSError:
                 print('warning: main scrape task, progress check invoking pid check: process_one_status threw an error from the OS.', file=sys.stderr)
+                traceback.print_exc()
 
             except KeyError:
                 if video.status == 'error':
                     print(f"(loop check) video {video.video_id}: pid unknown, and remote status reports error: {video.progress} -> aborted")
                     if video.progress not in ['downloaded', 'aborted']:
+                        video._prefinal_progress = video.progress
                         video.set_progress('aborted')
                 elif video.status not in ['postlive', 'upload']:
                     print(f"(loop check) video {video.video_id}: resetting progress after possible corruption (pid unknown!): {video.progress} -> unscraped")
@@ -2597,14 +2650,44 @@ def main_scrape_task(*, context):
                 else:
                     if video.progress not in ['downloaded', 'aborted']:
                         try:
+                            video._prefinal_progress = video.progress
                             video.set_progress('downloaded')
                         except TransitionException:
                             print(f"(loop check) video {video.video_id}: pid unknown with status '{video.status}', cancelling download: {video.progress} -> aborted")
                             video.set_progress('aborted')
+                    traceback.print_exc()
 
         if not video.did_meta_flush:
             print(f'warning: ... didn\'t flush meta.... flushing now... video: {video.video_id} (status {video.status}, progress {video.progress})')
             persist_meta(video=video, context=context, fresh=True, clobber=True)
+
+
+def main_scrape_task(*, context):
+    """ Task for each iteration of the main loop, without added delay. """
+    context.update_lives_status_fast_source()
+
+    # Try to make sure downloaders are tracked with correct state
+    process_dlpid_queue(context=context)
+
+    # Scrape each video again if needed
+    for video in context.lives.values():
+        maybe_rescrape(video, context=context)
+
+    main_progress_preload_and_check_waiting(context=context)
+    main_progress_advancement(context=context)
+
+    # DO IT AGAIN
+    context.update_lives_status_slow_source()
+
+    # Try to make sure downloaders are tracked with correct state
+    process_dlpid_queue(context=context)
+
+    # Scrape each video again if needed
+    for video in context.lives.values():
+        maybe_rescrape(video, context=context)
+
+    main_progress_preload_and_check_waiting(context=context)
+    main_progress_advancement(context=context)
 
 
 def print_autoscraper_statistics(*, context: AutoScraper):
