@@ -483,6 +483,7 @@ class AutoScraper:
                 for video_id in [f.split(" ")[0].strip() for f in urls.readlines()]:
                     # Process each recent video
                     should_filter = False
+                    word = '?'
                     if video_id not in self.lives:
                         # For now, assume the worst and always load membership videos
                         should_filter = should_filter_video(video_id)
@@ -500,9 +501,10 @@ class AutoScraper:
 
                     video = self.lives.get(video_id)
                     if not video:
-                        print(f'warning: video not loaded, skipping: {video_id}', file=sys.stderr)
+                        print(f'warning: video not loaded, loading now: {video_id}', file=sys.stderr)
                         # this will screw up our counters but it's better than skipping the loop
-                        continue
+                        recall_video(video_id, context=self, filter_progress=False, id_source=f'urllist:urllist:{word}:disk', disk_only=True)
+                        video = self.get_or_init_video(video_id, id_source=f'urllist:urllist:{word}')
 
                     channel.add_video(video)
 
