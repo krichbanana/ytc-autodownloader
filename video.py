@@ -4,6 +4,8 @@ from utils import get_timestamp_now
 
 statuses = frozenset(['unknown', 'prelive', 'live', 'postlive', 'upload', 'error'])
 progress_statuses = frozenset(['unscraped', 'waiting', 'downloading', 'downloaded', 'missed', 'invalid', 'aborted'])
+write_counter_values = frozenset(['basic', 'metafile', 'status_metafile'])
+
 
 class TransitionException(Exception):
     """ Invalid live status transition by setter """
@@ -38,6 +40,8 @@ class BaseVideo:
         self.meta_flush_reason = 'new video object'
         # declare our possible intent here
         self.next_event_check = 0
+        self.create_counter = {}
+        self.overwrite_counter = {}
 
     def set_status(self, status: str):
         """ Set the online status (live progress) of a video
@@ -124,3 +128,17 @@ class BaseVideo:
         self.did_progress_print = False
         self.progress_flush_reason = f'progress reset: {self.progress} -> unscraped'
         self.progress = 'unscraped'
+
+    def _update_create_counter(self, name: str):
+        """ debug counter to check meta creation counts """
+        self.create_counter = getattr(self, 'create_counter', {})
+        if name not in write_counter_values:
+            print(f'warning: unknown debug create counter name: {name}', file=sys.stderr)
+        self.create_counter[name] = self.create_counter.setdefault(name, 0) + 1
+
+    def _update_overwrite_counter(self, name: str):
+        """ debug counter to check meta overwrite (clobber) counts """
+        self.overwrite_counter = getattr(self, 'overwrite_counter', {})
+        if name not in write_counter_values:
+            print(f'warning: unknown debug overwrite counter name: {name}', file=sys.stderr)
+        self.overwrite_counter[name] = self.overwrite_counter.setdefault(name, 0) + 1
