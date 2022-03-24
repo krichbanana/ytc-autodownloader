@@ -789,6 +789,7 @@ class AutoScraper:
         seen_vids: Set[str] = set()
         lives = self.lives
 
+        last_batch = (channel.batch or set()).copy()
         channel.start_batch()
 
         status_hints = []
@@ -801,6 +802,12 @@ class AutoScraper:
 
         # We don't just check 'all' since the list used may be slow to update.
         for video_status in video_categories:
+            if video_status == 'past':
+                if bool(len(last_batch - seen_vids)):
+                    print('channel scraper: videos disappeared since last batch; checking past videos')
+                else:
+                    continue
+
             attempts_left = 3
             while attempts_left > 0:
                 try:
