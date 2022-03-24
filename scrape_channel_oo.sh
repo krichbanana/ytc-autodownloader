@@ -58,6 +58,11 @@ fi
 # Create an onmilist of urls (with possible duplicates)
 cat "${tmppre}.url" "${tmppre}.57.url" >"${tmppre}.final.url"
 
+if [[ ! -s "${tmppre}.final.url" ]]; then
+    echo "error: no urls for yt-dlp" >&2
+    exit 1
+fi
+
 mkdir -p channel-cached
 touch "channel-cached/${channelbase}.url.all"
 

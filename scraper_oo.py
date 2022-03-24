@@ -714,15 +714,23 @@ class AutoScraper:
         if not use_ytdlp:
             try:
                 self.scrape_and_process_channel_chatdownloader(channel, dlog=dlog)
-            except Exception:
-                print("failed to scrape channel list with chat_downloader:", channel_id, file=sys.stderr)
-                traceback.print_exc()
-                if channel.batching:
-                    print("warning: batching in progress, resetting:", channel_id, file=sys.stderr)
-                    print("last batch:", channel_id, file=sys.stderr)
-                    print(channel.batch, file=sys.stderr)
-                    channel.clear_batch()
-                use_ytdlp = True
+            except (NoVideos, Exception) as e:
+                if not isinstance(e, NoVideos):
+                    print("failed to scrape channel list with chat_downloader:", channel_id, file=sys.stderr)
+                    traceback.print_exc()
+                    if channel.batching:
+                        print("warning: batching in progress, resetting:", channel_id, file=sys.stderr)
+                        print("last batch:", channel_id, file=sys.stderr)
+                        print(channel.batch, file=sys.stderr)
+                        channel.clear_batch()
+                    use_ytdlp = True
+                else:
+                    if channel.batching:
+                        if len(channel.batch) > 0:
+                            print('error: got batch video from channels with no videos')
+                            use_ytdlp = True
+                        channel.clear_batch()
+                        channel.batch_end_timestamp = get_timestamp_now()
 
         if use_ytdlp:
             is_membership = not is_true_main
@@ -918,6 +926,7 @@ class AutoScraper:
                 except NoVideos:
                     print('warning: "No videos" when scraping videos tab via chat_downloader; not retrying', file=sys.stderr)
                     attempts_left = 0
+                    raise
 
                 else:
                     break
