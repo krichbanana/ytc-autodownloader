@@ -687,6 +687,7 @@ class AutoScraper:
         channel = None
         use_ytdlp = False
         throttle = float(throttle)
+        scrape_start_timestamp = get_timestamp_now()
 
         if dlog is None:
             dlog = sys.stdout
@@ -731,10 +732,24 @@ class AutoScraper:
                             use_ytdlp = True
                         channel.clear_batch()
                         channel.batch_end_timestamp = get_timestamp_now()
+            finally:
+                if channel.batch_end_timestamp < scrape_start_timestamp:
+                    channel.batch_end_timestamp = get_timestamp_now()
+
+            diff = channel.batch_end_timestamp - scrape_start_timestamp
+            print(f'channel scrape: channel {channel.channel_id}: chat_downloader scrape process took {diff:.3F} sec')
 
         if use_ytdlp:
+            scrape_start_timestamp = get_timestamp_now()
             is_membership = not is_true_main
+
             self.scrape_and_process_channel_ytdlp(channel, dlog=dlog, is_membership=is_membership, throttle=throttle)
+
+            if channel.batch_end_timestamp < scrape_start_timestamp:
+                channel.batch_end_timestamp = get_timestamp_now()
+
+            diff = channel.batch_end_timestamp - scrape_start_timestamp
+            print(f'channel scrape: channel {channel.channel_id}: yt-dlp scrape process took {diff:.3F} sec')
 
         # Scrape community tab page for links (esp. member stream links)
         # Currently only try this when cookies are provided.
@@ -742,8 +757,16 @@ class AutoScraper:
         # NOTE: alt_main is a preferable solution and tries the above tab page.
         # I believe this is a new feature by YouTube (~Nov 2021).
         if ALLOW_COOKIED_COMMUNITY_TAB_SCRAPE:
+            scrape_start_timestamp = get_timestamp_now()
+
             if os.path.exists(channel_id + ".txt"):
                 self.scrape_and_process_channel_ytdlp(channel, dlog=dlog, community_scrape=True, throttle=throttle)
+
+            if channel.batch_end_timestamp < scrape_start_timestamp:
+                channel.batch_end_timestamp = get_timestamp_now()
+
+            diff = channel.batch_end_timestamp - scrape_start_timestamp
+            print(f'channel scrape: channel {channel.channel_id}: ytdlp community scrape process took {diff:.3F} sec')
 
     def scrape_and_process_channel_chatdownloader(self, /, channel: Channel, *, dlog: IO = None):
         """ Use chat_downloader's get_user_videos() to quickly get channel videos and live statuses. """
