@@ -1267,7 +1267,7 @@ def populate_meta_fields_chatdownloader(*, player_response: Dict[str, Any], vide
         # Video lacks a description
         meta['description'] = None
     meta['uploader'] = video_data['author']
-    meta['duration'] = video_data['duration']
+    meta['duration'] = video_data.get('duration')
 
     meta['is_live'] = video_details.get('isLive') is True
     meta['is_upcoming'] = video_details.get('isUpcoming') is True
@@ -1732,7 +1732,7 @@ def populate_meta_fields_ytdlp(jsonres) -> Dict[str, Any]:
     ytmeta['description'] = jsonres.get('description')
     ytmeta['uploader'] = jsonres['uploader']
     ytmeta['channel_id'] = jsonres['channel_id']
-    ytmeta['duration'] = jsonres['duration']
+    ytmeta['duration'] = jsonres.get('duration')
 
     try:
         # Fields from my yt-dlp fork's experimental patches
