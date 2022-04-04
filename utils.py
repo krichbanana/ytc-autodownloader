@@ -4,6 +4,7 @@ import datetime as dt
 import os
 import sys
 import multiprocessing as mp
+import subprocess
 import time
 import json
 
@@ -205,6 +206,15 @@ def json_stream_wrapper(blob: str):
                     print('json stream loop: no progress', file=sys.stderr)
                     raise
                 e = e2
+
+
+def get_commit():
+    try:
+        proc = subprocess.Popen(['git', 'describe', '--long', '--always'], stdout=subprocess.PIPE)
+        proc.wait()
+        return proc.stdout.read().decode().strip()
+    except OSError:
+        return ''
 
 
 if __name__ == '__main__':

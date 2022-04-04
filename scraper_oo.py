@@ -33,6 +33,7 @@ from chat_downloader.errors import (  # type: ignore
 
 from utils import (
     check_pid,
+    get_commit,
     get_timestamp_now,
     extract_video_id_from_yturl,
     json_stream_wrapper,
