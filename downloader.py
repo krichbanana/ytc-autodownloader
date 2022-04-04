@@ -143,6 +143,36 @@ def try_for_cookies(video_id=None, channel_id=None, allow_generic=True):
     return None
 
 
+def _format_hms(curr_eta):
+    # format as [[H?Hh:]M?Mm]S?S.FFFs
+    neg = curr_eta < 0
+    if neg:
+        curr_eta *= -1
+    curr_eta_hms = ["%d" % (curr_eta // 3600) + "h", ("%02d" % (curr_eta % 3600 // 60)) + "m", ("%06.3f" % (curr_eta % 60) + "s")]
+    tmp_timestr = ''
+    # strip leading zeros or the chunk entirely
+    if curr_eta_hms[0] == '0h':
+        curr_eta_hms[0] = None
+    else:
+        tmp_timestr = curr_eta_hms[0] + ':'
+
+    if curr_eta_hms[0] is None:
+        curr_eta_hms[1] = curr_eta_hms[1].removeprefix('0')
+    if curr_eta_hms[1] == '0m':
+        curr_eta_hms[1] = None
+    else:
+        tmp_timestr += curr_eta_hms[1] + ':'
+
+    if curr_eta_hms[1] is None:
+        curr_eta_hms[2] = curr_eta_hms[2].removeprefix('0')
+    tmp_timestr += curr_eta_hms[2]
+
+    if neg:
+        tmp_timestr = '-' + tmp_timestr
+
+    return tmp_timestr
+
+
 class Downloader:
     def __init__(self, outname, video_id, init_timestamp):
         self.outname = outname
