@@ -123,7 +123,10 @@ class Video(BaseVideo):
 
 
 class Channel(BaseChannel):
-    pass
+    def __init__(self, channel_id, *, is_metachannel=False):
+        super().__init__(channel_id, is_metachannel=is_metachannel)
+        self.downloader = None
+        self.youtube = None
 
 
 def has_metafile_status(video: Video, status: str):
@@ -777,10 +780,14 @@ class AutoScraper:
         if dlog is None:
             dlog = sys.stdout
 
-        downloader = ChatDownloader()
+        downloader = getattr(channel, 'downloader', None)
+        if not downloader:
+            downloader = channel.downloader = ChatDownloader()
 
         # Forcefully create a YouTube session
-        youtube: YouTubeChatDownloader = downloader.create_session(YouTubeChatDownloader)
+        youtube: YouTubeChatDownloader = getattr(channel, 'youtube', None)
+        if not youtube:
+            youtube = channel.youtube = downloader.create_session(YouTubeChatDownloader)
 
         limit = CHANNEL_SCRAPE_LIMIT
         PAGE_DELAY = 0.004
