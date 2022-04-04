@@ -611,9 +611,13 @@ class AutoScraper:
 
                     video = self.lives.get(video_id)
                     if not video:
-                        print(f'warning: video not loaded, skipping: {video_id}', file=sys.stderr)
                         # this will screw up our counters but it's better than skipping the loop
-                        continue
+                        if not is_membership:
+                            print(f'warning: video not loaded, skipping: {video_id}', file=sys.stderr)
+                        else:
+                            print(f'warning: video not loaded, loading now: {video_id}', file=sys.stderr)
+                            recall_video(video_id, context=self, filter_progress=False, id_source=f'urllist:urllist:{word}:disk', disk_only=True)
+                            video = self.get_or_init_video(video_id, id_source=f'urllist:urllist:{word}')
 
                     channel.add_video(video)
 
