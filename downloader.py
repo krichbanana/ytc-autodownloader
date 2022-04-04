@@ -24,7 +24,8 @@ from chat_downloader.utils.core import (
 from utils import (
     create_file_lock,
     remove_file_lock,
-    extract_video_id_from_yturl
+    extract_video_id_from_yturl,
+    get_timestamp_now
 )
 
 
@@ -281,16 +282,28 @@ class Downloader:
         ytstatus = 'unknown'
 
         try:
-            details = youtube.get_video_data(video_id, params={'max_attempts': 7})
+            fd = None
+            try:
+                # Try to throttle requests, especially on autoscraper startup
+                fd = create_file_lock("webpage.lock")
+                details = youtube.get_video_data(video_id, params={'max_attempts': 7})
+                time.sleep(0.5)
+            finally:
+                if fd is not None:
+                    remove_file_lock(fd)
+
             is_live = details.get('status') in {'live', 'upcoming'}
             channel_id = details.get('author_id')
             print('(downloader) initial:', details.get('status'), details.get('video_type'), video_id)
-            print('(downloader) title:', details.get('title'))
-            print('(downloader) author:', details.get('author'))
-            if details.get('title') is None:
+            title = details.get('title')
+            print('(downloader) title:', title)
+            author = details.get('author')
+            print('(downloader) author:', author)
+            if title is None:
                 print('title missing, will dump video details')
                 print('(downloader) video_id:', video_id)
                 print('(downloader)', details)
+
             else:
                 ytstatus = details.get('status'), details.get('video_type')
                 progress = 'data-fetched'
@@ -336,18 +349,31 @@ class Downloader:
                         new_cookies = False
 
                     fd = None
-                    if not started and private and not new_cookies:
-                        # Throttle time-waiting private video tasks to avoid hammering YouTube
-                        fd = create_file_lock("private.lock")
-                        time.sleep(5)
-
                     try:
+                        if not started and private and not new_cookies:
+                            # Throttle time-waiting inaccessible video tasks to avoid hammering YouTube
+                            fd = create_file_lock("private.lock")
+                            time.sleep(5)
+                        else:
+                            # Excessive parallelism may trigger YouTube's anti-bot mechanisms
+                            prelocktime = get_timestamp_now()
+                            fd = create_file_lock("webpage.lock")
+                            locktime = get_timestamp_now()
+                            time.sleep(0.5)
+                            lockdiff = locktime - prelocktime
+                            if lockdiff < 0:
+                                print(f"warning: lock acquisition time is negative {lockdiff}; this doesn't make sense", file=sys.stderr)
+                            else:
+                                print(f'notice: lock acquisition time was {lockdiff:0.3F}')
+
                         downloader = ChatDownloader(cookies=cookies)
 
                         youtube: YouTubeChatDownloader = downloader.create_session(YouTubeChatDownloader)
 
                         details = youtube.get_video_data(video_id, params={'max_attempts': 7})
                         is_live = details.get('status') in {'live', 'upcoming'}
+                        title = details.get('title')
+                        author = details.get('author')
                         if retry:
                             print('(downloader) retry:', details.get('status'), details.get('video_type'), video_id)
                             if progress != last_progress:
