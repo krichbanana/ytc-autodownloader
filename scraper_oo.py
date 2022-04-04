@@ -11,7 +11,6 @@ import signal
 import typing
 from typing import (
     Any,
-    Callable,
     Dict,
     IO,
     Optional,
@@ -23,6 +22,7 @@ from bs4 import BeautifulSoup  # type: ignore
 from urllib3.exceptions import SSLError  # type: ignore
 from chat_downloader import ChatDownloader  # type: ignore
 from chat_downloader.sites import YouTubeChatDownloader  # type: ignore
+from chat_downloader.debugging import set_log_level  # type: ignore
 from chat_downloader.errors import (  # type: ignore
     UserNotFound,
     VideoNotFound,
@@ -38,6 +38,7 @@ from utils import (
     json_stream_wrapper,
     meta_load_fast,
     meta_extract_start_timestamp,
+    meta_extract_end_timestamp,
     meta_extract_raw_live_status
 )
 from video import (
@@ -67,6 +68,7 @@ SCRAPER_SLEEP_INTERVAL = 60
 CHANNEL_SCRAPE_LIMIT = 30
 DUMP_DIR = 'dump'
 DUMP_DIR_ALT = 'dump_alt'
+SUPERVERBOSE = True
 
 
 downloadmetacmd = "../yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
@@ -81,7 +83,6 @@ holoscrape_api_cmd = "wget -nv https://schedule.hololive.tv/api/list/1 -O - | jq
 
 
 meta_lastresort_keys = {'_raw_player_response', '_raw_info_dict'}
-
 
 # For alt-main usage
 is_true_main = True
@@ -272,6 +273,8 @@ class AutoScraper:
         if dlog is None:
             dlog = sys.stdout
 
+        update_start = get_timestamp_now()
+
         for link in soup.find_all('a'):
             # Extract any link
             href = link.get('href')
@@ -299,9 +302,14 @@ class AutoScraper:
                 # known (not new) and current (not old) live listed
                 currentlives += 1
 
+        update_end = get_timestamp_now()
+        diff = update_end - update_start
+
         print("discovery: holoschedule: new lives:", str(newlives))
         print("discovery: holoschedule: current lives:", str(currentlives))
         print("discovery: holoschedule: old lives:", str(oldlives))
+
+        print(f'holoschedule task: took {diff:.03F} seconds')
 
     def update_lives_status_holoschedule_api(self, /, *, dlog: IO = None) -> None:
         jsonlist = get_hololivetv_api_json()
@@ -313,6 +321,8 @@ class AutoScraper:
             dlog = sys.stdout
 
         rescrape_queue = []
+
+        update_start = get_timestamp_now()
 
         for video_info in jsonlist:
             # Extract any link
@@ -354,9 +364,14 @@ class AutoScraper:
                 if not video.did_meta_flush:
                     persist_ytmeta(video, fresh=True, clobber=True)
 
+        update_end = get_timestamp_now()
+        diff = update_end - update_start
+
         print("discovery: holoschedule (api): new lives:", str(newlives))
         print("discovery: holoschedule (api): current lives:", str(currentlives))
         print("discovery: holoschedule (api): old lives:", str(oldlives))
+
+        print(f'holoschedule (api) task: took {diff:.03F} seconds')
 
     def update_lives_status_urllist(self, *, dlog: IO = None):
         """ Process a url file (currently only supports raw video IDs)
@@ -374,7 +389,13 @@ class AutoScraper:
             print(ch.batch, file=sys.stderr)
             ch.clear_batch()
 
+        update_start = get_timestamp_now()
+
         self.process_urllist_videos(channel=ch, dlog=dlog)
+
+        update_end = get_timestamp_now()
+        diff = update_end - update_start
+        print(f'urllist task: took {diff:.03F} seconds')
 
     def update_lives_status_channellist(self, *, dlog: IO = None, is_membership=False) -> None:
         """ Read channels.txt for a list of channel IDs to process. """
@@ -385,6 +406,8 @@ class AutoScraper:
 
         if is_membership:
             channels_file = 'channels-cookied.txt'
+
+        update_start = get_timestamp_now()
 
         try:
             if os.path.exists(channels_file):
@@ -403,7 +426,11 @@ class AutoScraper:
                             print('warning: line from channels file has too many values', file=sys.stderr)
                             continue
 
+                        if SUPERVERBOSE:
+                            set_log_level('debug')
                         self.scrape_and_process_channel(channel_id=channel_id, dlog=dlog, throttle=throttle)
+                        if SUPERVERBOSE:
+                            set_log_level('warning')
 
         except Exception:
             print(f"warning: unexpected error with processing {channels_file}", file=sys.stderr)
@@ -414,6 +441,10 @@ class AutoScraper:
                     print("last batch:", channel_id, file=sys.stderr)
                     print(channel.batch, file=sys.stderr)
                     channel.clear_batch()
+
+        update_end = get_timestamp_now()
+        diff = update_end - update_start
+        print(f'channellist task: took {diff:.03F} seconds')
 
     def _videolist_rescrape_uncached_meta(self, /, video: Video, *, origin: str, is_membership, channel: Channel) -> Tuple[bool, bool]:
         """ If no precached meta (from yt-dlp or another source), then rescrape.
@@ -811,6 +842,9 @@ class AutoScraper:
         counters_seen: Dict[str, Any] = dict(map(lambda e: (e, 0), video_categories))
         counters: Dict[str, Any] = dict(map(lambda e: (e, 0), video_categories))
 
+        scrape_start = get_timestamp_now()
+        timings = []
+
         # We don't just check 'all' since the list used may be slow to update.
         for video_status in video_categories:
             if video_status == 'past':
@@ -819,14 +853,15 @@ class AutoScraper:
                 else:
                     continue
 
+            scrape_start = get_timestamp_now()
             attempts_left = 3
             while attempts_left > 0:
                 try:
                     perpage_count = 0
                     time.sleep(ATTEMPT_DELAY)
                     for basic_video_details in youtube.get_user_videos(channel_id=channel.channel_id, video_status=video_status, params={'max_attempts': 3}):
-                        time.sleep(PAGE_DELAY)
                         attempts_left -= 1
+                        time.sleep(PAGE_DELAY)
                         status = 'unknown'
                         status_hint: Optional[str] = None
                         just_scraped = False
@@ -976,6 +1011,9 @@ class AutoScraper:
                 if attempts_left == 0:  # out of attempts
                     raise RuntimeError('too many retries on channel scrape with chat_downloader')
 
+            scrape_end = get_timestamp_now()
+            timings.append(f'{(scrape_end - scrape_start):.3F}')
+
         channel.end_batch()
 
         for video_id, status_hint in status_hints:
@@ -1003,6 +1041,9 @@ class AutoScraper:
                     persist_meta(video, context=self, fresh=True, clobber=True)
                 else:
                     print(f'warning: status hint contradiction ignored; likely the live just ended: video {video_id}', file=sys.stderr)
+
+        if SUPERVERBOSE:
+            print('channel scrape: timings:', timings)
 
         report_text = ""
         for vs in ['upcoming', 'live', 'all']:
