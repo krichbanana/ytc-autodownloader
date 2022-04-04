@@ -51,15 +51,23 @@ EXIT_FALSE = 1
 EXIT_BADARG = 2
 
 
-def compress_lzip(filename):
-    cmd = "lzip -9".split() + [filename]
+def compress_lzip(filename, nice=True):
+    cmd = "lzip -9 --"
+    if nice:
+        cmd = 'nice ' + cmd
+    cmd = cmd.split() + [filename]
     doneproc = subprocess.run(cmd)
+
     return doneproc.returncode
 
 
-def compress_zstd(filename):
-    cmd = "zstd -f -19 --rm".split() + [filename]
+def compress_zstd(filename, nice=True):
+    cmd = "zstd -f -19 --rm --"
+    if nice:
+        cmd = 'nice ' + cmd
+    cmd = cmd.split() + [filename]
     doneproc = subprocess.run(cmd)
+
     return doneproc.returncode
 
 
