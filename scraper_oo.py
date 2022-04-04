@@ -2416,6 +2416,14 @@ def alt_main(context: AutoScraper):
         Ideal for member content or other cookied high-priority content.
         Conflicts should be avoided by the user, for now.
     """
+    altpid = os.getpid()
+    commit = get_commit() or 'unknown'
+    modtime = dt.datetime.fromtimestamp(os.stat(sys.argv[0]).st_mtime)
+    init_status = f"{altpid = }. program modtime: {modtime}; commit: {commit}"
+    print(init_status)
+    with open('altpid_init_status.txt', 'w') as fp:
+        fp.write(init_status)
+
     print("Updating lives status (alt-main)", flush=True)
     # In case we are called directly. Test program won't handle this properly.
     # signal.signal(signal.SIGUSR1, handle_special_signal)
@@ -2463,7 +2471,12 @@ def alt_main(context: AutoScraper):
 def main(context: AutoScraper):
     global mainpid
     mainpid = os.getpid()
-    print(f"{mainpid = }. program modtime:", dt.datetime.fromtimestamp(os.stat(sys.argv[0]).st_mtime))
+    commit = get_commit() or 'unknown'
+    modtime = dt.datetime.fromtimestamp(os.stat(sys.argv[0]).st_mtime)
+    init_status = f"{mainpid = }. program modtime: {modtime}; commit: {commit}"
+    print(init_status)
+    with open('mainpid_init_status.txt', 'w') as fp:
+        fp.write(init_status)
 
     fast_startup = False
     if len(sys.argv) == 2 and sys.argv[1] == 'reexec':
