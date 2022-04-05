@@ -1408,7 +1408,7 @@ def persist_basic_state(video: Video, *, context: AutoScraper, clobber=True, clo
         clobber_pid = clobber
 
     if clobber or not os.path.exists(statefile):
-        if not clobber or not os.path.exists(statefile):
+        if not os.path.exists(statefile):
             action = 'Creating'
             video._update_create_counter('basic')
         else:
@@ -1534,7 +1534,7 @@ def persist_ytmeta(video: Video, *, fresh=False, clobber=True):
 
         try:
             if clobber or not os.path.exists(metafileyt):
-                if not clobber or not os.path.exists(metafileyt):
+                if not os.path.exists(metafileyt):
                     action = 'Creating'
                     video._update_create_counter('metafile')
                 else:
