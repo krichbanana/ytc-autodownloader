@@ -2807,10 +2807,14 @@ def main_progress_advancement(*, context):
                 if check_pid(pypid):
                     # Might be a zombie; trigger a rescrape if it was supposed to be downloading
                     print(f'warning: main scrape task, progress check third part: suspected zombie task {pypid} for video {video.video_id}; dropping pid.', file=sys.stderr)
+                else:
+                    # ... or maybe we should just remove the invalid PID period. This might create invoke loops.
+                    print(f'warning: main scrape task, progress check third part: clearing invalid pid {pypid} for video {video.video_id}', file=sys.stderr)
 
                 if video_id not in context.lives:
                     print(f'warning: stale pid {pypid} for video {video_id}')
-                    del context.pids[video.video_id]
+
+                del context.pids[video.video_id]
 
         except OSError:
             print('warning: main scrape task, progress check invoking third pid check: process_one_status threw an error from the OS.', file=sys.stderr)
