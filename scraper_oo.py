@@ -2748,6 +2748,10 @@ def main_progress_advancement(*, context):
             try:
                 (pypid, dlpid) = context.pids[video.video_id]
                 if not check_pid(dlpid):
+                    if check_pid(pypid):
+                        # Might be a zombie; trigger a rescrape if it was supposed to be downloading
+                        print(f'warning: main scrape task, progress check: suspected zombie task {pypid} for video {video.video_id}; dropping pid.', file=sys.stderr)
+                        del context.pids[video.video_id]
                     process_one_status(video, context=context, force=True)
 
             except ChatDownloaderError:
