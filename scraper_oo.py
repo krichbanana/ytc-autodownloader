@@ -2777,7 +2777,7 @@ def main_progress_advancement(*, context):
                         except TransitionException:
                             print(f"(loop check) video {video.video_id}: pid unknown with status '{video.status}', cancelling download: {video.progress} -> aborted")
                             video.set_progress('aborted')
-                    traceback.print_exc()
+                        traceback.print_exc()
         else:
             try:
                 (pypid, dlpid) = context.pids[video.video_id]
