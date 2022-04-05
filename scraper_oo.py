@@ -2743,7 +2743,7 @@ def main_progress_advancement(*, context):
             except OSError:
                 print('warning: main scrape task, progress check: process_one_status threw an error from the OS.', file=sys.stderr)
                 traceback.print_exc()
-        elif video.progress == 'downloading':
+        if video.progress in ['downloading', 'downloaded', 'aborted']:
             # Check download progress for (possibly premature) downloader exit
             try:
                 (pypid, dlpid) = context.pids[video.video_id]
@@ -2768,10 +2768,8 @@ def main_progress_advancement(*, context):
                     if video.progress not in ['downloaded', 'aborted']:
                         video._prefinal_progress = video.progress
                         video.set_progress('aborted')
-                elif video.status not in ['postlive', 'upload']:
-                    print(f"(loop check) video {video.video_id}: resetting progress after possible corruption (pid unknown!): {video.progress} -> unscraped")
-                    video.reset_progress()
                 else:
+                    # Video status can't be trusted; don't rely on it here.
                     if video.progress not in ['downloaded', 'aborted']:
                         try:
                             video._prefinal_progress = video.progress
