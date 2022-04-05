@@ -1552,20 +1552,30 @@ def persist_ytmeta(video: Video, *, fresh=False, clobber=True):
                     if os.path.exists(bugtest3) and metafileyt_status != bugtest3:
                         print('warning: redundant meta status write:', metafileyt_status, file=sys.stderr)
                     # I'll figure out how to do this with warnings eventually... maybe.
-                    # Hunt down a likely bug.
+                    # Seems YouTube can suffer serious bugs on rare occasion and wrongly indicate the status.
+                    # We shouldn't abort the meta write... right?
                     if os.path.exists(bugtest3) and metafileyt_status == bugtest2:
-                        raise RuntimeError(f'illegal meta write (bug): {metafileyt_status} written after {bugtest3})')
+                        print(f'illegal meta write (bug): {metafileyt_status} written after {bugtest3})', file=sys.stderr)
+                        clobber = False
                     if os.path.exists(bugtest3) and metafileyt_status == bugtest1:
-                        raise RuntimeError(f'illegal meta write (bug): {metafileyt_status} written after {bugtest3})')
+                        print(f'illegal meta write (bug): {metafileyt_status} written after {bugtest3})', file=sys.stderr)
+                        clobber = False
                     if os.path.exists(bugtest2) and metafileyt_status == bugtest1:
-                        raise RuntimeError(f'illegal meta write (bug): {metafileyt_status} written after {bugtest2})')
+                        print(f'illegal meta write (bug): {metafileyt_status} written after {bugtest2})', file=sys.stderr)
+                        clobber = False
 
-                    if not clobber or not os.path.exists(metafileyt_status):
+                    if not os.path.exists(metafileyt_status):
                         action = 'Creating'
                         video._update_create_counter('status_metafile')
-                    else:
+                    elif clobber:
                         action = 'Updating'
                         video._update_overwrite_counter('status_metafile')
+                    else:
+                        # bug, clobber set to false from true
+                        action = 'Dumping'
+                        video._update_overwrite_counter('status_metafile')
+                        metafileyt_status += '.bug'
+
                     print(f'{action} {metafileyt_status}')
                     with open(metafileyt_status, 'wb') as fp:
                         fp.write(json.dumps(ytmeta, indent=1).encode())
