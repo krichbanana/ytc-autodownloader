@@ -2811,8 +2811,6 @@ def main_progress_advancement(*, context):
                 if video_id not in context.lives:
                     print(f'warning: stale pid {pypid} for video {video_id}')
                     del context.pids[video.video_id]
-                else:
-                    process_one_status(video, context=context, force=True)
 
         except OSError:
             print('warning: main scrape task, progress check invoking third pid check: process_one_status threw an error from the OS.', file=sys.stderr)
