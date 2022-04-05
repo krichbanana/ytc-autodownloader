@@ -2778,10 +2778,45 @@ def main_progress_advancement(*, context):
                             print(f"(loop check) video {video.video_id}: pid unknown with status '{video.status}', cancelling download: {video.progress} -> aborted")
                             video.set_progress('aborted')
                     traceback.print_exc()
+        else:
+            try:
+                (pypid, dlpid) = context.pids[video.video_id]
+                if not check_pid(dlpid):
+                    if check_pid(pypid):
+                        # Might be a zombie; trigger a rescrape if it was supposed to be downloading
+                        print(f'warning: main scrape task, progress check second part: suspected zombie task {pypid} for video {video.video_id}; dropping pid.', file=sys.stderr)
+                        del context.pids[video.video_id]
+                    process_one_status(video, context=context, force=True)
+
+            except OSError:
+                print('warning: main scrape task, progress check invoking second pid check: process_one_status threw an error from the OS.', file=sys.stderr)
+                traceback.print_exc()
+
+            except KeyError:
+                pass
 
         if not video.did_meta_flush:
             print(f'warning: ... didn\'t flush meta.... flushing now... video: {video.video_id} (status {video.status}, progress {video.progress})')
             persist_meta(video=video, context=context, fresh=True, clobber=True)
+
+    for video_id in context.pids.copy():
+        (pypid, dlpid) = context.pids[video_id]
+
+        try:
+            if not check_pid(dlpid):
+                if check_pid(pypid):
+                    # Might be a zombie; trigger a rescrape if it was supposed to be downloading
+                    print(f'warning: main scrape task, progress check third part: suspected zombie task {pypid} for video {video.video_id}; dropping pid.', file=sys.stderr)
+
+                if video_id not in context.lives:
+                    print(f'warning: stale pid {pypid} for video {video_id}')
+                    del context.pids[video.video_id]
+                else:
+                    process_one_status(video, context=context, force=True)
+
+        except OSError:
+            print('warning: main scrape task, progress check invoking third pid check: process_one_status threw an error from the OS.', file=sys.stderr)
+            traceback.print_exc()
 
 
 def main_scrape_task(*, context):
