@@ -2418,7 +2418,10 @@ def alt_main(context: AutoScraper):
     """
     altpid = os.getpid()
     commit = get_commit() or 'unknown'
-    modtime = dt.datetime.fromtimestamp(os.stat(sys.argv[0]).st_mtime)
+    try:
+        modtime = dt.datetime.fromtimestamp(os.stat("../scraper_oo.py").st_mtime)
+    except OSError:
+        modtime = None
     init_status = f"{altpid = }. program modtime: {modtime}; commit: {commit}"
     print(init_status)
     with open('altpid_init_status.txt', 'w') as fp:
