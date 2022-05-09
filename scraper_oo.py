@@ -993,12 +993,16 @@ class AutoScraper:
 
                 except UserNotFound:
                     print(f'warning: "User not found" when scraping videos tab via chat_downloader; retries left: {attempts_left}', file=sys.stderr)
+                    # we may not actually enter the for body, and if the channel is terminated then...
+                    attempts_left -= 1
 
                 except SSLError:
                     # a bug in chat_downloader means some optionally-handled exceptions in "requests" are not wrapped in
                     # requests.exceptions.RequestException but is instead raised by urllib. This mean certain exceptions
                     # can be unhandled; SSLError is the most common one.
+                    # python-requests 2.27.1+16+g79f60274 (not exact) should fix this; 2.27.1 is still broken.
                     print(f'warning: SSL error when scraping videos tab via chat_downloader; retries left: {attempts_left}', file=sys.stderr)
+                    attempts_left -= 1
 
                 except NoVideos:
                     print('warning: "No videos" when scraping videos tab via chat_downloader; not retrying', file=sys.stderr)
