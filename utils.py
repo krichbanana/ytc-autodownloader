@@ -3,6 +3,7 @@
 import datetime as dt
 import os
 import sys
+import glob
 import multiprocessing as mp
 import subprocess
 import time
@@ -113,9 +114,46 @@ def get_timestamp_now():
     return dt.datetime.utcnow().timestamp()
 
 
-def parse_iso8601(text):
+_TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
+
+
+def parse_timestamp_as_utc_datetime(ts):
+    """ adds utc zone when parsing utc timestamp to avoid local tz conversion """
+    timestamp = dt.datetime.utcfromtimestamp(ts).strftime(_TIME_FORMAT)
+    return dt.datetime.strptime(timestamp + "+0000", _TIME_FORMAT + '%z')
+
+
+def parse_iso8601_as_utc(text):
+    """ adds utc zone when parsing utc iso8601 date to avoid local tz conversion """
+    return float(dt.datetime.fromisoformat(text + '+00:00').timestamp())
+
+
+def parse_iso8601_with_tz(text):
     """ Convert ISO-8601 formatted string to unix timestamp (with micros) """
+    return float(dt.datetime.fromisoformat(text).timestamp())
+
+
+def _parse_iso8601(text):
+    """ Convert ISO-8601 formatted string to unix timestamp (with micros) """
+    # likely not timezone-safe, do not use. use .timestamp() instead of .strftime(); strftime forces localtime.
     return float(dt.datetime.fromisoformat(text).strftime('%s.%f'))
+
+
+def meta_load_loginfo_list(video_id):
+    file = "by-video-id/" + str(video_id) + '.loginfo'
+    if os.path.exists(file):
+        try:
+            blob = open(file).read()
+            infolist = [x for x in json_stream_wrapper(blob)]
+            if len(infolist) != 1:
+                print(f'unusual loginfo: len {len(infolist)}', file=sys.stderr)
+            return infolist
+        except json.JSONDecodeError:
+            print('json decode failed for loginfo', file=sys.stderr)
+            return []
+    else:
+        print('(utils.py) could not find loginfo file:', file, file=sys.stderr)
+        return []
 
 
 def meta_load_fast(video_id):
@@ -132,18 +170,171 @@ def meta_load_fast(video_id):
         print('(utils.py) could not find status file:', id_prefix, file=sys.stderr)
 
 
-def get_start_timestamp(video_id):
+def meta_load_all(video_id):
+    id_prefix = "by-video-id/" + str(video_id)
+    if os.path.exists(id_prefix):
+        globber = id_prefix + '.meta*'
+        for file in glob.iglob(globber):
+            try:
+                yield json.load(open(file))
+            except json.JSONDecodeError:
+                print('corrupt metafile json, ignoring', file=sys.stderr)
+    else:
+        print('(utils.py) could not find status file:', id_prefix, file=sys.stderr)
+
+
+def meta_extract_field(meta, field):
+    if callable(field):
+        try:
+            return field(meta)
+        except (KeyError, AttributeError, ValueError, TypeError):
+            return None
+    else:
+        return meta.get(field)
+
+
+def _get_field_metafile(video_id, first_meta, keys, note=None):
+    # .meta
+    meta = first_meta or meta_load_fast(video_id)
+    for key in keys:
+        field = meta_extract_field(meta, key)
+        if not note:
+            note = key
+
+        if field is not None:
+            return field
+
+
+def _get_field_status_metafiles(video_id, first_meta, keys, note=None):
+    # .meta.status...
+    for meta in meta_load_all(video_id):
+        meta = meta_load_fast(video_id)
+        for key in keys:
+            field = meta_extract_field(meta, key)
+            if field:
+                return field
+
+
+def _get_field_loginfo(video_id, first_meta, keys, note=None):
+    # .loginfo
+    for meta in meta_load_loginfo_list(video_id):
+        try:
+            for key in keys:
+                field = meta_extract_field(meta, key)
+                if field is not None:
+                    return field
+        except KeyError:
+            pass
+    return None
+
+
+def get_field(video_id, first_meta, keys, note=None):
+    # metakey, logkey
+    if isinstance(keys, str) or callable(keys):
+        keys = [keys, keys]
+    field = None
+    try:
+        field = _get_field_loginfo(video_id, None, keys, note)
+        if field is None:
+            print(f'(utils.py) could not find {note} for video {video_id} in loginfo, trying metafile', file=sys.stderr)
+            field = _get_field_metafile(video_id, first_meta, keys, note)
+        else:
+            return field
+
+        if field is None:
+            print(f'(utils.py) could not find {note} for video {video_id} in loginfo or metafile, trying alternative metafiles', file=sys.stderr)
+            field = _get_field_status_metafiles(video_id, None, keys, note)
+            if field is not None:
+                return field
+        else:
+            return field
+
+    except Exception:
+        print(f'(utils.py) get_field failed for {len(keys)} keys', file=sys.stderr)
+        raise
+
+    if field is None:
+        print(f'(utils.py) could not find {note} for video {video_id} anywhere', file=sys.stderr)
+
+    return field
+
+
+def get_channel_id(video_id, first_meta=None):
+    return get_field(video_id, first_meta,
+                     [lambda m: m['ytmeta']['channel_id'], 'channel_id', 'uploader_id'],
+                     note='channel id')
+
+
+def get_uploader(video_id, first_meta=None):
+    return get_field(video_id, first_meta,
+                     [lambda m: m['ytmeta']['uploader'], 'uploader', 'author'],
+                     note='uploader/author')
+
+
+def _parse_loginfo_currtime_iso(m):
+    return int(parse_iso8601_with_tz(m['currtime_iso']))
+
+
+def _parse_loginfo_currtime(m):
+    return int(parse_iso8601_as_utc(m['currtime'][:-4].replace('_', ':')))
+
+
+def get_curr_timestamp(video_id, first_meta=None):
+    return get_field(video_id, first_meta,
+                     [
+                         lambda m: _parse_loginfo_currtime(m),
+                         lambda m: _parse_loginfo_currtime_iso(m)
+                     ],
+                     note='curr timestamp')
+
+
+def get_start_timestamp(video_id, first_meta=None):
+    return get_field(video_id, first_meta,
+                     [
+                         lambda m: m['ytmeta']['live_starttime'], 'starttime',
+                         lambda m: _parse_loginfo_currtime(m),
+                         lambda m: _parse_loginfo_currtime_iso(m)
+                     ],
+                     note='start/curr timestamp')
+
+
+def old_get_start_timestamp(video_id):
     try:
         meta = meta_load_fast(video_id)
         timestamp = meta_extract_start_timestamp(meta)
 
         if timestamp is None:
-            print('(utils.py) could not find start timestamp', file=sys.stderr)
+            print(f'(utils.py) could not find start timestamp for video {video_id}, trying loginfo', file=sys.stderr)
+        else:
+            return timestamp
+
+        for meta in meta_load_loginfo_list(video_id):
+            try:
+                timestamp = meta['starttime']
+                if timestamp:
+                    break
+            except KeyError:
+                pass
+
+        if timestamp is None:
+            print(f'(utils.py) could not find start timestamp for video {video_id} in loginfo, trying alternative metafiles', file=sys.stderr)
+        else:
+            return timestamp
+
+        for meta in meta_load_all(video_id):
+            meta = meta_load_fast(video_id)
+            timestamp = meta_extract_start_timestamp(meta)
+            if timestamp:
+                break
+
+        if timestamp is None:
+            print(f'(utils.py) could not find start timestamp for video {video_id} anywhere', file=sys.stderr)
 
         return timestamp
 
     except Exception:
         print('(utils.py) get_start_timestamp() failed', file=sys.stderr)
+        raise
 
         return None
 
