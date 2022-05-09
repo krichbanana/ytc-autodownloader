@@ -1977,18 +1977,29 @@ def invoke_downloader(video: Video, *, context: AutoScraper):
             video.progress = 'missed'
             return
 
-        nowtime = dt.datetime.utcnow()
-        outfile = "_" + video_id + "_curr-" + str(nowtime.timestamp())
+        nowtime = dt.datetime.now(tz=dt.timezone.utc)  # utcnow directly alters the timestamp for some reason, so those old filename timestamps are wrong
+        outfile = "_" + video_id + "_curr-utc-" + str(nowtime.timestamp())  # replaced _curr- with _curr-utc- after above fix; added an indicative field too
 
         title = video.meta.get('title')
         uploader = video.meta.get('uploader')
         channel_id = video.meta.get('channel_id')
         starttime = video.meta.get('live_starttime')
         live_status = video.status
-        currtimesafe = safen_path(nowtime.isoformat(timespec='seconds')) + "_UTC"
+        # old tsval 'currtime': safen_path(nowtime.isoformat(timespec='seconds')) + "_UTC"
+        currtime_iso = nowtime.astimezone().isoformat(timespec='seconds')
 
         with open("by-video-id/" + video_id + ".loginfo", "a") as fp:
-            res = {"video_id": video_id, "title": title, "channel_id": channel_id, "uploader": uploader, "starttime": starttime, "currtime": currtimesafe, "live_status": live_status, "basename": outfile}
+            res = {
+                "video_id": video_id,
+                "title": title,
+                "channel_id": channel_id,
+                "uploader": uploader,
+                "starttime": starttime,
+                "currtime_iso": currtime_iso,
+                "live_status": live_status,
+                "basename": outfile,
+                "_ts_version": 'utc',
+            }
             fp.write(json.dumps(res, indent=2))
 
         p = mp.Process(target=_invoke_downloader_start, args=(q, video_id, outfile))
