@@ -1987,6 +1987,9 @@ def invoke_downloader(video: Video, *, context: AutoScraper):
         live_status = video.status
         # old tsval 'currtime': safen_path(nowtime.isoformat(timespec='seconds')) + "_UTC"
         currtime_iso = nowtime.astimezone().isoformat(timespec='seconds')
+        # helpful for privated/removed videos.
+        referrer_channel_id = getattr(video, 'referrer_channel_id', None)
+        id_source = getattr(video, 'id_source', None)
 
         with open("by-video-id/" + video_id + ".loginfo", "a") as fp:
             res = {
@@ -1998,6 +2001,8 @@ def invoke_downloader(video: Video, *, context: AutoScraper):
                 "currtime_iso": currtime_iso,
                 "live_status": live_status,
                 "basename": outfile,
+                "referrer_channel_id": referrer_channel_id,
+                "id_source": id_source,
                 "_ts_version": 'utc',
             }
             fp.write(json.dumps(res, indent=2))
