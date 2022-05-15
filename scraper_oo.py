@@ -225,6 +225,7 @@ class AutoScraper:
                             video.set_status('live')
                         else:
                             video.rescrape_meta()
+                            process_ytmeta(video)
 
             except OSError:
                 print("warning: OS (I/O) error during holoschedule follow-up processing.. Network error?")
@@ -1031,10 +1032,12 @@ class AutoScraper:
                 # Existing videos will not see the suggestion to rescrape since the tab loop skips the processing for them.
                 print(f'channel scraper: tab page suggests new live status, rescraping: {video_id}: "{video.status}" became "{status_hint}"')
                 video.rescrape_meta()
+                process_ytmeta(video)
                 persist_meta(video, context=self, fresh=True, clobber=True, clobber_pid=False)
             elif video.status == 'prelive' and video.progress in ['missed', 'aborted', 'downloaded']:
                 print(f'warning: status hint contradicts very unlikely video progress: video {video_id} with prior status {video.status}: hint is {status_hint}, progress is {video.progress}', file=sys.stderr)
                 video.rescrape_meta()
+                process_ytmeta(video)
                 persist_meta(video, context=self, fresh=True, clobber=True)
             elif video.status == 'live' and video.progress in ['missed', 'aborted', 'downloaded']:
                 print(f'warning: status hint contradicts unlikely video progress: video {video_id} with prior status {video.status}: hint is {status_hint}, progress is {video.progress}', file=sys.stderr)
@@ -1043,6 +1046,7 @@ class AutoScraper:
                 trans_ts = video.transition_timestamp
                 if now - trans_ts > 60.0:
                     video.rescrape_meta()
+                    process_ytmeta(video)
                     persist_meta(video, context=self, fresh=True, clobber=True)
                 else:
                     print(f'warning: status hint contradiction ignored; likely the live just ended: video {video_id}', file=sys.stderr)
@@ -1711,7 +1715,8 @@ def process_ytmeta(video: Video):
         It should be save to call this function multiple times, as long as we don't care to lose the current set progress.
     """
     if video.meta is None:
-        raise RuntimeError('precondition failed: called process_ytmeta but ytmeta for video ' + video.video_id + ' not found.')
+        print('warning: precondition failed: called process_ytmeta but ytmeta for video ' + video.video_id + ' not found.', file=sys.stderr)
+        return None
 
     if video.meta.get('is_upcoming'):
         # note: premieres can also be upcoming but are not livestreams.
@@ -2657,6 +2662,7 @@ def main_reexec_corruption_check(*, context):
                     if not has_metafile_status(video=video, status='postlive'):
                         print(f'warning: video {video.video_id} apparently finished but lacks postlive metafile; doing immediate rescrape')
                         video.rescrape_meta()
+                        process_ytmeta(video)
                         if video.status != 'error':
                             persist_basic_state(video, context=context, clobber=True)
                         persist_ytmeta(video, fresh=True, clobber=False)
@@ -2674,6 +2680,7 @@ def main_reexec_corruption_check(*, context):
                 if not has_metafile_status(video=video, status='postlive'):
                     print(f'warning: video {video.video_id} apparently aborted but lacks postlive metafile; doing immediate rescrape')
                     video.rescrape_meta()
+                    process_ytmeta(video)
                     if video.status != 'error' and video.meta:
                         persist_basic_state(video, context=context, clobber=True)
                         video.reset_progress()
@@ -2687,6 +2694,7 @@ def main_reexec_corruption_check(*, context):
                 if getattr(video, '_prefinal_status', None) in ['prelive', 'live']:
                     print(f'(initial check after reexec) video {video.video_id} status is error on reexec, rescraping.')
                     video.rescrape_meta()
+                    process_ytmeta(video)
                     if video.status != 'error':
                         persist_basic_state(video, context=context, clobber=True)
                     persist_ytmeta(video, fresh=True, clobber=False)
