@@ -2504,6 +2504,7 @@ def alt_main(context: AutoScraper):
 
         finally:
             print_autoscraper_statistics(context=context)
+            print("finished scrape task. date:", dt.datetime.now())
 
 
 def main(context: AutoScraper):
@@ -2603,6 +2604,7 @@ def main(context: AutoScraper):
 
         finally:
             print_autoscraper_statistics(context=context)
+            print("finished scrape task. date:", dt.datetime.now())
 
             statuslog.flush()
 
