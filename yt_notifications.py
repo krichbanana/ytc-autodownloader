@@ -29,14 +29,16 @@ def extract_notification_menu(response, continuation_list):
 
 def extract_notification(notification):
     # notificationRenderer
-    video_id = traverse_obj(notification, ('navigationEndpoint', 'watchEndpoint', 'videoId'),
+    video_id = traverse_obj(notification,
+                            ('navigationEndpoint', 'watchEndpoint', 'videoId'),
+                            ('navigationEndpoint', 'getCommentsFromInboxCommand', 'videoId'),
                             expected_type=str)
     if not video_id:
         return None
     thumbnails = traverse_obj(notification, ('videoThumbnail', 'thumbnails'), expected_type=list)
     status_text = traverse_obj(notification, ('shortMessage', 'simpleText'), expected_type=str)
     uploader = traverse_obj(notification, ('contextualMenu', 'menuRenderer', 'items', 1,
-                            'menuServiceItemRenderer', 'text', 'runs', 1, 'text'), expected_type=str)
+                            'menuServiceItemRenderer', 'text', 'runs', 1, 'text'), expected_type=str) or ''
     status_text = status_text.removeprefix(uploader + ' ')
     split_text = status_text.split(': ', 2)
     title = None
