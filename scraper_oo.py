@@ -739,6 +739,8 @@ class AutoScraper:
             elapsed = get_timestamp_now() - channel.batch_end_timestamp
             if elapsed < 0:
                 print(f'warning: channel batch-end timestamp is in the future: ahead by {(-elapsed)} (channel: {channel_id})', file=sys.stderr)
+                # Correct timestamps that are too far in the future
+                channel.batch_end_timestamp = min(channel.batch_end_timestamp, get_timestamp_now() + throttle / 2)
             if elapsed < throttle:
                 print(f'notice: skipping channel scrape (channel: {channel_id}) as time elapsed is too short ({elapsed:0.3F} < {throttle})', file=sys.stderr)
                 return
@@ -1088,6 +1090,8 @@ class AutoScraper:
             elapsed = get_timestamp_now() - channel.batch_end_timestamp
             if elapsed < 0:
                 print(f'warning: channel batch-end timestamp is in the future: ahead by {(-elapsed)} (channel: {channel_id})', file=sys.stderr)
+                # Correct timestamps that are too far in the future
+                channel.batch_end_timestamp = min(channel.batch_end_timestamp, get_timestamp_now() + throttle / 2)
             if elapsed < throttle:
                 print(f'notice: skipping yt-dlp channel scrape (channel: {channel_id}) as time elapsed is too short ({elapsed:0.3F} < {throttle})', file=sys.stderr)
                 return
@@ -1239,6 +1243,8 @@ def rescrape_chatdownloader(video: Video, *, channel=None, youtube=None, cookies
         elapsed = get_timestamp_now() - video.meta_timestamp
         if elapsed < 0:
             print(f'warning: elapsed time since scrape is negative: {elapsed} (video: {video_id})', file=sys.stderr)
+            # Correct timestamps that are too far in the future
+            video.meta_timestamp = min(video.meta_timestamp, get_timestamp_now() + throttle / 2)
         if elapsed < throttle:
             print(f'warning: throttling scrape for video {video_id} ({elapsed:0.6F} < {throttle})', file=sys.stderr)
             return
