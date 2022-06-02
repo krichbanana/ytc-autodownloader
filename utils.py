@@ -110,6 +110,11 @@ def check_pid(pid):
         return True
 
 
+def get_utc_timestamp_now():
+    # Gets a UTC timestamp, not an artificially shifted one without zone information
+    return dt.datetime.now(tz=dt.timezone.utc).timestamp()
+
+
 def get_timestamp_now():
     return dt.datetime.utcnow().timestamp()
 
