@@ -1037,8 +1037,18 @@ class AutoScraper:
                 persist_meta(video, context=self, fresh=True, clobber=True, clobber_pid=False)
             elif video.status == 'prelive' and video.progress in ['missed', 'aborted', 'downloaded']:
                 print(f'warning: status hint contradicts very unlikely video progress: video {video_id} with prior status {video.status}: hint is {status_hint}, progress is {video.progress}', file=sys.stderr)
-                video.rescrape_meta()
+                if not video.meta.get('live_endtime'):
+                    video.rescrape_meta()
+                video.reset_progress()
                 process_ytmeta(video)
+                pids = self.pids.get(video_id)
+                if pids and check_pid(pids[1]):
+                    try:
+                        video.set_progress('downloading')
+                    except TransitionException:
+                        # either 'unscraped' still set somehow or it became invalid. YouTube is unpredictable, so just ignore any weirdness.
+                        pass
+                    # process_one_status should correct any weird status after this
                 persist_meta(video, context=self, fresh=True, clobber=True)
             elif video.status == 'live' and video.progress in ['missed', 'aborted', 'downloaded']:
                 print(f'warning: status hint contradicts unlikely video progress: video {video_id} with prior status {video.status}: hint is {status_hint}, progress is {video.progress}', file=sys.stderr)
@@ -1046,8 +1056,18 @@ class AutoScraper:
                 now = get_timestamp_now()
                 trans_ts = video.transition_timestamp
                 if now - trans_ts > 60.0:
-                    video.rescrape_meta()
+                    if not video.meta.get('live_endtime'):
+                        video.rescrape_meta()
+                    video.reset_progress()
                     process_ytmeta(video)
+                    pids = self.pids.get(video_id)
+                    if pids and check_pid(pids[1]):
+                        try:
+                            video.set_progress('downloading')
+                        except TransitionException:
+                            # either 'unscraped' still set somehow or it became invalid. YouTube is unpredictable, so just ignore any weirdness.
+                            pass
+                    # process_one_status should correct any weird status after this
                     persist_meta(video, context=self, fresh=True, clobber=True)
                 else:
                     print(f'warning: status hint contradiction ignored; likely the live just ended: video {video_id}', file=sys.stderr)
@@ -1714,6 +1734,7 @@ def recall_video(video_id: str, *, context: AutoScraper, filter_progress=False, 
 def process_ytmeta(video: Video):
     """ Set status, initial progress from meta
         It should be save to call this function multiple times, as long as we don't care to lose the current set progress.
+        Progress only updates if it is set to 'unscraped', or if the video is an upload.
     """
     if video.meta is None:
         print('warning: precondition failed: called process_ytmeta but ytmeta for video ' + video.video_id + ' not found.', file=sys.stderr)
