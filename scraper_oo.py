@@ -2015,6 +2015,7 @@ def invoke_downloader(video: Video, *, context: AutoScraper):
                 "id_source": id_source,
                 "_ts_version": 'utc',
                 "_downloader_version": CHATDOWNLOADER_VERSION,
+                "_autoscraper_starttime": context.init_timestamp,
             }
             fp.write(json.dumps(res, indent=2))
 
@@ -2469,6 +2470,7 @@ def alt_main(context: AutoScraper):
     # signal.signal(signal.SIGUSR1, handle_special_signal)
     signal.signal(signal.SIGUSR2, handle_debug_signal)
     # Alt-main hacks here
+    print("date:", dt.datetime.now())
     context.update_lives_status()
 
     if True:
@@ -2551,6 +2553,7 @@ def main(context: AutoScraper):
     os.fsync(statuslog.fileno())
 
     print("Updating lives status", flush=True)
+    print("date:", dt.datetime.now())
     context.update_lives_status()
 
     if not fast_startup:
@@ -2586,6 +2589,7 @@ def main(context: AutoScraper):
             else:
                 time.sleep(SCRAPER_SLEEP_INTERVAL)
 
+            print("doing scrape task. date:", dt.datetime.now())
             main_scrape_task(context=context)
 
         except KeyError:
