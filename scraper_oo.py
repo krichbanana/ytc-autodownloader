@@ -22,6 +22,7 @@ from bs4 import BeautifulSoup  # type: ignore
 from urllib3.exceptions import SSLError  # type: ignore
 from chat_downloader import ChatDownloader  # type: ignore
 from chat_downloader.sites import YouTubeChatDownloader  # type: ignore
+from chat_downloader.metadata import __version__ as CHATDOWNLOADER_VERSION  # type: ignore
 from chat_downloader.debugging import set_log_level  # type: ignore
 from chat_downloader.errors import (  # type: ignore
     UserNotFound,
@@ -2013,6 +2014,7 @@ def invoke_downloader(video: Video, *, context: AutoScraper):
                 "referrer_channel_id": referrer_channel_id,
                 "id_source": id_source,
                 "_ts_version": 'utc',
+                "_downloader_version": CHATDOWNLOADER_VERSION,
             }
             fp.write(json.dumps(res, indent=2))
 
