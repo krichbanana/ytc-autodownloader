@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import sys
-from utils import get_timestamp_now
+from utils import get_utc_timestamp_now as get_timestamp_now
 
 statuses = frozenset(['unknown', 'prelive', 'live', 'postlive', 'upload', 'error'])
 progress_statuses = frozenset(['unscraped', 'waiting', 'downloading', 'downloaded', 'missed', 'invalid', 'aborted'])
