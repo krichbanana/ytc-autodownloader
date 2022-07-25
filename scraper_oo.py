@@ -175,6 +175,7 @@ class AutoScraper:
     def update_lives_status(self, /):
         self.update_lives_status_fast_source()
         self.update_lives_status_slow_source()
+        self.update_lives_status_fast_source()
 
     def update_lives_status_fast_source(self, /):
         if not is_true_main:
@@ -2847,30 +2848,28 @@ def main_progress_advancement(*, context):
 
 def main_scrape_task(*, context):
     """ Task for each iteration of the main loop, without added delay. """
+
+    def after_live_status_update():
+        # Try to make sure downloaders are tracked with correct state
+        process_dlpid_queue(context=context)
+
+        # Scrape each video again if needed
+        for video in context.lives.values():
+            maybe_rescrape(video, context=context)
+
+        main_progress_preload_and_check_waiting(context=context)
+        main_progress_advancement(context=context)
+
     context.update_lives_status_fast_source()
-
-    # Try to make sure downloaders are tracked with correct state
-    process_dlpid_queue(context=context)
-
-    # Scrape each video again if needed
-    for video in context.lives.values():
-        maybe_rescrape(video, context=context)
-
-    main_progress_preload_and_check_waiting(context=context)
-    main_progress_advancement(context=context)
+    after_live_status_update()
 
     # DO IT AGAIN
     context.update_lives_status_slow_source()
+    after_live_status_update()
 
-    # Try to make sure downloaders are tracked with correct state
-    process_dlpid_queue(context=context)
-
-    # Scrape each video again if needed
-    for video in context.lives.values():
-        maybe_rescrape(video, context=context)
-
-    main_progress_preload_and_check_waiting(context=context)
-    main_progress_advancement(context=context)
+    # once more, before we sleep
+    context.update_lives_status_fast_source()
+    after_live_status_update()
 
 
 def print_autoscraper_statistics(*, context: AutoScraper):
