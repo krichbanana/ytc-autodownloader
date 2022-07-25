@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import gc
 import subprocess
 import sys
 import json
@@ -1979,6 +1980,9 @@ def process_dlpid_queue(*, context: AutoScraper):
 
         try:
             lives[vid].set_progress('downloading')
+            persist_ytmeta(lives[vid])
+            if check_pid(pid):
+                lives[vid].rawmeta = None
         except TransitionException:
             if lives[vid].progress in {'unscraped', 'waiting', 'downloading'}:
                 print(f"warning: discarding weird progress status {lives[vid].progress}, setting to downloading:", vid)
@@ -2047,8 +2051,10 @@ def invoke_downloader(video: Video, *, context: AutoScraper):
             }
             fp.write(json.dumps(res, indent=2))
 
+        gc.freeze()
         p = mp.Process(target=_invoke_downloader_start, args=(q, video_id, outfile))
         p.start()
+        gc.unfreeze()
 
         # Wait for the process to spawn and for the downloader PID to be sent.
         time.sleep(0.5)
@@ -2080,11 +2086,17 @@ def _invoke_downloader_start(q, video_id, outfile):
         pass  # older python versions (pre-3.9) lack close()
     # Block this fork (hopefully not the main process)
     try:
+        # fix potential memory leak
+        global main_autoscraper
+        main_autoscraper = None
+        print(f'(FORK GC) collected {gc.collect()} objects')
+
         proc.wait()
         print("process fork " + str(pid) + " has waited (video: " + video_id + ")")
     except KeyboardInterrupt:
         print("process fork " + str(pid) + " was interrupted (video: " + video_id + ")")
         raise KeyboardInterrupt from None
+    sys.exit()
 
 
 def delete_ytmeta_raw(video: Video, *, context: AutoScraper = None, suffix: str = None):
