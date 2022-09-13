@@ -27,7 +27,7 @@ from utils import (
     create_file_lock,
     remove_file_lock,
     extract_video_id_from_yturl,
-    get_timestamp_now
+    get_utc_timestamp_now as get_timestamp_now
 )
 
 from notify import notify_send
@@ -179,10 +179,10 @@ def _format_hms(curr_eta):
 
 
 class Downloader:
-    def __init__(self, outname, video_id, init_timestamp):
+    def __init__(self, outname, video_id, init_timestamp_utc):
         self.outname = outname
         self.video_id = video_id
-        self.init_timestamp = init_timestamp
+        self.init_timestamp_utc = init_timestamp_utc
         self.message_count = 0
 
     def write_current_progress(self, /, *, curr_status, curr_progress: str):
@@ -192,8 +192,8 @@ class Downloader:
         try:
             fd = create_file_lock(f"by-video-id/{video_id}.lock")
             with open(f"by-video-id/{video_id}.dlprog", "a") as fp:
-                curr_timestamp = dt.datetime.utcnow().timestamp()
-                res = {'init_timestamp': self.init_timestamp, 'curr_timestamp': curr_timestamp, 'curr_status': curr_status, 'curr_progress': curr_progress, 'outfile': self.outname, 'message_count': self.message_count}
+                curr_timestamp_utc = get_timestamp_now()
+                res = {'init_timestamp_utc': self.init_timestamp_utc, 'curr_timestamp_utc': curr_timestamp_utc, 'curr_status': curr_status, 'curr_progress': curr_progress, 'outfile': self.outname, 'message_count': self.message_count, '_ts_version': 'utc'}
                 fp.write(json.dumps(res))
         finally:
             if fd is not None:
@@ -206,8 +206,8 @@ class Downloader:
         try:
             fd = create_file_lock(f"by-video-id/{video_id}.lock")
             with open(f"by-video-id/{video_id}.dlstart", "a") as fp:
-                curr_timestamp = dt.datetime.utcnow().timestamp()
-                res = {'init_timestamp': self.init_timestamp, 'curr_timestamp': curr_timestamp, 'curr_progress': curr_progress, 'outfile': self.outname, 'downloader_version': CHATDOWNLOADER_VERSION}
+                curr_timestamp_utc = get_timestamp_now()
+                res = {'init_timestamp_utc': self.init_timestamp_utc, 'curr_timestamp_utc': curr_timestamp_utc, 'curr_progress': curr_progress, 'outfile': self.outname, 'downloader_version': CHATDOWNLOADER_VERSION, '_ts_version': 'utc'}
                 fp.write(json.dumps(res))
         finally:
             if fd is not None:
@@ -220,8 +220,8 @@ class Downloader:
         try:
             fd = create_file_lock(f"by-video-id/{video_id}.lock")
             with open(f"by-video-id/{video_id}.dlend", "a") as fp:
-                final_timestamp = dt.datetime.utcnow().timestamp()
-                res = {'init_timestamp': self.init_timestamp, 'final_timestamp': final_timestamp, 'exit_cause': exit_cause, 'outfile': self.outname, 'message_count': self.message_count}
+                final_timestamp_utc = get_timestamp_now()
+                res = {'init_timestamp_utc': self.init_timestamp_utc, 'final_timestamp_utc': final_timestamp_utc, 'exit_cause': exit_cause, 'outfile': self.outname, 'message_count': self.message_count, '_ts_version': 'utc'}
                 fp.write(json.dumps(res))
         finally:
             if fd is not None:
@@ -234,8 +234,8 @@ class Downloader:
         try:
             fd = create_file_lock(f"by-video-id/{video_id}.lock")
             with open(f"by-video-id/{video_id}.status", "a") as fp:
-                final_timestamp = dt.datetime.utcnow().timestamp()
-                res = {'init_timestamp': self.init_timestamp, 'final_timestamp': final_timestamp, 'final_status': final_status, 'outfile': self.outname}
+                final_timestamp_utc = get_timestamp_now()
+                res = {'init_timestamp_utc': self.init_timestamp_utc, 'final_timestamp_utc': final_timestamp_utc, 'final_status': final_status, 'outfile': self.outname, '_ts_version': 'utc'}
                 fp.write(json.dumps(res))
         finally:
             if fd is not None:
@@ -845,8 +845,8 @@ def main():
     video_id = sys.argv[2]
     if len(sys.argv) == 3:
         signal.signal(signal.SIGUSR1, handle_special_signal)
-        init_timestamp = dt.datetime.utcnow().timestamp()
-        downloader = Downloader("chat-logs/" + outname, video_id, init_timestamp)
+        init_timestamp_utc = get_timestamp_now()
+        downloader = Downloader("chat-logs/" + outname, video_id, init_timestamp_utc)
         try:
             downloader.write_initial_progress('invoked')
             notify_send('downloader invoked', f'{video_id}', timeout_msec=5000)
@@ -858,7 +858,7 @@ def main():
                 print('(downloader) state directory is not set up!', file=sys.stderr)
             print(f"(downloader) fatal exception (pid = {os.getpid()}, ppid = {os.getppid()}, video_id = {downloader.video_id}, outname = {downloader.outname})")
             notify_send('downloader died :(', f'{video_id}', timeout_msec=60000)
-            downloader = Downloader("chat-logs/" + outname, video_id, init_timestamp)
+            downloader = Downloader("chat-logs/" + outname, video_id, init_timestamp_utc)
             downloader.write_initial_progress('invoked-yt-dlp')
             subprocess.run(['yt-dlp', '--skip-download', '--all-subs', '--ignore-no-formats-error', '--sub-langs', 'live_chat', '-o', '_%(id)s_start-%(release_timestamp)s.ytdlp', '--', video_id])
             try:
