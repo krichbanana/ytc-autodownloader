@@ -6,9 +6,11 @@ import subprocess
 import signal
 import datetime as dt
 import json
+import glob
 
 from chat_downloader import ChatDownloader
 from chat_downloader.sites import YouTubeChatDownloader
+from chat_downloader.metadata import __version__ as CHATDOWNLOADER_VERSION
 from chat_downloader.errors import (
     LoginRequired,
     VideoUnplayable,
@@ -27,6 +29,8 @@ from utils import (
     extract_video_id_from_yturl,
     get_timestamp_now
 )
+
+from notify import notify_send
 
 
 try:
@@ -203,7 +207,7 @@ class Downloader:
             fd = create_file_lock(f"by-video-id/{video_id}.lock")
             with open(f"by-video-id/{video_id}.dlstart", "a") as fp:
                 curr_timestamp = dt.datetime.utcnow().timestamp()
-                res = {'init_timestamp': self.init_timestamp, 'curr_timestamp': curr_timestamp, 'curr_progress': curr_progress, 'outfile': self.outname}
+                res = {'init_timestamp': self.init_timestamp, 'curr_timestamp': curr_timestamp, 'curr_progress': curr_progress, 'outfile': self.outname, 'downloader_version': CHATDOWNLOADER_VERSION}
                 fp.write(json.dumps(res))
         finally:
             if fd is not None:
@@ -262,6 +266,9 @@ class Downloader:
         video_id = self.video_id
         if old_video_id != video_id:
             print('(downloader) warning: video_id was not a bare id.', file=sys.stderr)
+        title = None
+        author = None
+        start_eta = old_start_eta = end_eta = None
 
         global cookies_allowed
         cookies_allowed = check_cookies_allowed()
@@ -279,15 +286,31 @@ class Downloader:
 
         last_progress = 'invoked'
         progress = 'invoked'
-        ytstatus = 'unknown'
+        ytstatus = ('unknown', 'unknown')
 
         try:
             fd = None
             try:
                 # Try to throttle requests, especially on autoscraper startup
-                fd = create_file_lock("webpage.lock")
+                prelocktime = get_timestamp_now()
+                try:
+                    fd = create_file_lock("webpage.lock")
+                except KeyboardInterrupt:
+                    print('warning: acquisition of lock was actually interrupted.')
+                locktime = get_timestamp_now()
+                lockdiff = locktime - prelocktime
+                if lockdiff < 0:
+                    print(f"warning: lock acquisition time is negative {lockdiff}; this doesn't make sense", file=sys.stderr)
+                else:
+                    print(f'notice: lock acquisition time was {lockdiff:0.3F}')
                 details = youtube.get_video_data(video_id, params={'max_attempts': 7})
+                yttime = get_timestamp_now()
+                ytdiff = yttime - locktime
                 time.sleep(0.5)
+                if lockdiff < 0:
+                    print(f"warning: yt details acquisition time is negative {ytdiff}; this doesn't make sense", file=sys.stderr)
+                else:
+                    print(f'notice: yt details acquisition time was {ytdiff:0.3F}')
             finally:
                 if fd is not None:
                     remove_file_lock(fd)
@@ -305,6 +328,47 @@ class Downloader:
                 print('(downloader)', details)
 
             else:
+                # chat_downloader converts it to microseconds for some reason
+                start_eta = details.get('start_time')
+                end_eta = details.get('end_time')
+                if start_eta:
+                    start_eta /= 1000000
+                    old_start_eta = start_eta
+                    if end_eta:
+                        end_eta /= 1000000
+                now_for_eta = float(dt.datetime.now().strftime("%s.%f"))
+                timing_text = ''
+                if start_eta:
+                    if start_eta < now_for_eta:
+                        curr_eta = -(now_for_eta - start_eta)
+                    else:
+                        curr_eta = start_eta - now_for_eta
+                    if end_eta:
+                        curr_eta_missed = -(now_for_eta - end_eta)
+
+                if start_eta:
+                    neg = curr_eta < 0
+                    if neg:
+                        curr_eta *= -1
+                    tmp_timestr = _format_hms(curr_eta)
+
+                    if end_eta:
+                        tmp_timestr_missed = _format_hms(curr_eta_missed)
+                        timing_text = f'Live ended at {tmp_timestr_missed} ago; stream began {tmp_timestr} ago'
+                    elif neg:
+                        timing_text = f'Live started {tmp_timestr} ago'
+                    else:
+                        timing_text = f'Live set to start in +{tmp_timestr}'
+                else:
+                    timing_text = 'Live is late?!'
+                    if old_start_eta:
+                        tmp_timestr = _format_hms(now_for_eta - old_start_eta)
+                        timing_text += f' Expected {tmp_timestr} ago'
+                    else:
+                        timing_text += ' Expected who knows how long ago, hopefully recently'
+
+                print('(downloader)', timing_text)
+
                 ytstatus = details.get('status'), details.get('video_type')
                 progress = 'data-fetched'
                 self.write_current_progress(curr_status=ytstatus, curr_progress=progress)
@@ -324,7 +388,15 @@ class Downloader:
             is_live = None
 
         try:
+            currtime = dt.datetime.now()
+            lasttime = currtime
+            lastmsgcount = 0
             while True:
+                currtime = dt.datetime.now()
+                delta = currtime - lasttime
+                if delta.seconds > 90:
+                    print('(downloader) warning: video %s: download loop stuck for %d.%06d seconds' % (video_id, delta.seconds, delta.microseconds), file=sys.stderr)
+                lasttime = currtime
                 if retry or paranoid_retry:
                     if not paranoid_retry:
                         errors += 1
@@ -343,7 +415,7 @@ class Downloader:
                         last_progress = progress
 
                     # Retry members only video on new cookies immediately.
-                    if not new_cookies:
+                    if not new_cookies and (not paranoid_retry or private):
                         time.sleep(60)
                     else:
                         new_cookies = False
@@ -395,6 +467,45 @@ class Downloader:
                             remove_file_lock(fd)
 
                 retry = True
+                timing_text = ''
+
+                # chat_downloader converts it to microseconds for some reason
+                start_eta = details.get('start_time')
+                end_eta = details.get('end_time')
+                if start_eta:
+                    start_eta /= 1000000
+                    old_start_eta = start_eta
+                    if end_eta:
+                        end_eta /= 1000000
+                now_for_eta = float(dt.datetime.now().strftime("%s.%f"))
+                if start_eta:
+                    if start_eta < now_for_eta:
+                        curr_eta = -(now_for_eta - start_eta)
+                    else:
+                        curr_eta = start_eta - now_for_eta
+                    if end_eta:
+                        curr_eta_missed = -(now_for_eta - end_eta)
+
+                if start_eta:
+                    neg = curr_eta < 0
+                    if neg:
+                        curr_eta *= -1
+                    tmp_timestr = _format_hms(curr_eta)
+
+                    if end_eta:
+                        tmp_timestr_missed = _format_hms(curr_eta_missed)
+                        timing_text = f'Live ended {tmp_timestr_missed} ago; stream began {tmp_timestr} ago'
+                    elif neg:
+                        timing_text = f'Live started {tmp_timestr} ago'
+                    else:
+                        timing_text = f'Live set to start in +{tmp_timestr}'
+                else:
+                    timing_text = 'Live is late?!'
+                    if old_start_eta:
+                        tmp_timestr = _format_hms(now_for_eta - old_start_eta)
+                        timing_text += f' Expected {tmp_timestr} ago'
+                    else:
+                        timing_text += ' Expected who knows how long ago, hopefully recently'
 
                 try:
                     chat = downloader.get_chat(video_id, output=output_file, message_groups=['all'], indent=2, overwrite=False, interruptible_retry=False)
@@ -424,8 +535,17 @@ class Downloader:
                         print('(downloader) Downloading live chat from video:', video_id)
                         if paranoid_retry:
                             print("(downloader) warning: chat downloader exited too soon!", video_id, f"{num_msgs = }", file=sys.stderr)
+                            try:
+                                notify_send('restarted downloader', f'{video_id} ({ytstatus[0]} {ytstatus[1]}): {title} / {author} / {timing_text}', timeout_msec=60000)
+                            except IndexError:
+                                print('ytstatus bug')
                             retried = True
                             paranoid_retry = False
+                        else:
+                            try:
+                                notify_send('started downloader', f'{video_id} ({ytstatus[0]} {ytstatus[1]}): {title} / {author} / {timing_text}', timeout_msec=15000)
+                            except IndexError:
+                                print('ytstatus bug')
 
                         with open(f"{self.outname}.stdout", "a") as fp:
                             for message in chat:                        # iterate over messages
@@ -434,6 +554,15 @@ class Downloader:
                                 # print the formatted message
                                 safe_print(chat.format(message), out=fp)
                                 fp.flush()
+                                # performance check
+                                currtime = dt.datetime.now()
+                                delta = currtime - lasttime
+                                msgdelta = num_msgs - lastmsgcount
+                                if delta.seconds > 90 and msgdelta > 1:
+                                    print('(downloader) warning: video %s: chat iteration stuck for %d.%06d seconds (got %d/%d new/total messages)' % (video_id, delta.seconds, delta.microseconds, msgdelta, num_msgs), file=sys.stderr)
+                                    notify_send('stuck iteration', f'{video_id}', timeout_msec=15000)
+                                lasttime = currtime
+                                lastmsgcount = num_msgs
 
                         # finished... maybe? we should retry anyway.
                         paranoid_retry = True
@@ -512,8 +641,8 @@ class Downloader:
                     else:
                         print('(downloader) Members only video detected, will try again with new cookies:', video_id)
 
-                except VideoUnavailable:
-                    print('(downloader) Removed video detected, giving up:', video_id)
+                except VideoUnavailable as e:
+                    print('(downloader) Removed video detected, giving up:', video_id, f'(message: {e.args[0]})')
 
                     if not paranoid_retry:
                         aborted = True
@@ -615,6 +744,78 @@ class Downloader:
 
         print('(downloader) download stats:', num_msgs, "messages for video", self.video_id)
 
+        try:
+            # Excessive parallelism may trigger YouTube's anti-bot mechanisms
+            prelocktime = get_timestamp_now()
+            fd = create_file_lock("webpage.lock")
+            locktime = get_timestamp_now()
+            details = youtube.get_video_data(video_id, params={'max_attempts': 7})
+            timing_text = ''
+
+            # chat_downloader converts it to microseconds for some reason
+            start_eta = details.get('start_time')
+            old_end_eta = end_eta
+            end_eta = details.get('end_time')
+            if start_eta:
+                start_eta /= 1000000
+                old_start_eta = start_eta
+                if end_eta:
+                    end_eta /= 1000000
+            now_for_eta = float(dt.datetime.now().strftime("%s.%f"))
+            if start_eta:
+                if start_eta < now_for_eta:
+                    curr_eta = -(now_for_eta - start_eta)
+                else:
+                    curr_eta = start_eta - now_for_eta
+                if end_eta:
+                    curr_eta_missed = -(now_for_eta - end_eta)
+                    # A live that is marked finished should close live chat after 5 minutes
+                    if abs(curr_eta_missed) > 360:
+                        timing_text += '(unusually delayed exit) '
+            elif old_start_eta:
+                timing_text += '(private now?) '
+                curr_eta = now_for_eta - old_start_eta
+                if old_end_eta:
+                    curr_eta_missed = now_for_eta - old_end_eta
+
+            if start_eta:
+                neg = curr_eta < 0
+                if neg:
+                    curr_eta *= -1
+                tmp_timestr = _format_hms(curr_eta)
+
+                if end_eta:
+                    tmp_timestr_missed = _format_hms(curr_eta_missed)
+                    timing_text = f'Live ended {tmp_timestr_missed} ago; stream began {tmp_timestr} ago'
+                elif neg:
+                    print(start_eta, now_for_eta)
+                    timing_text = f'Live started {tmp_timestr} ago'
+                else:
+                    timing_text = f'Live set to start in +{tmp_timestr}'
+            else:
+                timing_text = 'Live is late?!'
+                if old_start_eta:
+                    tmp_timestr = _format_hms(now_for_eta - old_start_eta)
+                    timing_text += f' Expected {tmp_timestr} ago'
+                else:
+                    timing_text += ' Expected who knows how long ago, hopefully recently'
+
+            print(f'(downloader) download exit analysis for video {self.video_id}: {progress} / {timing_text}')
+
+            time.sleep(0.5)
+            lockdiff = locktime - prelocktime
+            if lockdiff < 0:
+                print(f"warning: lock acquisition time is negative {lockdiff}; this doesn't make sense", file=sys.stderr)
+            else:
+                print(f'notice: lock acquisition time was {lockdiff:0.3F}')
+
+        except RuntimeError:
+            print('(downloader) post-processing exception occured, likely video data fetch issue')
+
+        finally:
+            if fd is not None:
+                remove_file_lock(fd)
+
         # Compress logs after the downloader exits.
         if started:
             # Throttle compress tasks to avoid stacking CPU and memory usage
@@ -629,6 +830,16 @@ def handle_special_signal(signum, frame):
     pass
 
 
+def compress_ytdlp(video_id):
+    fd = create_file_lock("compress.lock")
+    globber = '_' + video_id + '_*.ytdlp.*'
+    for file in glob.iglob(globber):
+        if file.split('.')[-1] in ['lz', 'zst']:
+            pass
+        compress(file)
+    remove_file_lock(fd)
+
+
 def main():
     outname = sys.argv[1]
     video_id = sys.argv[2]
@@ -638,6 +849,7 @@ def main():
         downloader = Downloader("chat-logs/" + outname, video_id, init_timestamp)
         try:
             downloader.write_initial_progress('invoked')
+            notify_send('downloader invoked', f'{video_id}', timeout_msec=5000)
             downloader.run_loop()
         except Exception as e:
             try:
@@ -645,9 +857,20 @@ def main():
             except FileNotFoundError:
                 print('(downloader) state directory is not set up!', file=sys.stderr)
             print(f"(downloader) fatal exception (pid = {os.getpid()}, ppid = {os.getppid()}, video_id = {downloader.video_id}, outname = {downloader.outname})")
+            notify_send('downloader died :(', f'{video_id}', timeout_msec=60000)
+            downloader = Downloader("chat-logs/" + outname, video_id, init_timestamp)
+            downloader.write_initial_progress('invoked-yt-dlp')
+            subprocess.run(['yt-dlp', '--skip-download', '--all-subs', '--ignore-no-formats-error', '--sub-langs', 'live_chat', '-o', '_%(id)s_start-%(release_timestamp)s.ytdlp', '--', video_id])
+            try:
+                compress_ytdlp(video_id)
+            except OSError:
+                pass
+            downloader.write_final_progress('exited-yt-dlp')
+            notify_send('downloader finished (yt-dlp)', f'{video_id}', timeout_msec=10000)
             raise e  # exit with non-zero status
         else:
             downloader.write_final_progress('finished')
+            notify_send('downloader finished', f'{video_id}', timeout_msec=10000)
 
     else:
         print("usage: {} '<outname>' '<video ID>'".format(sys.argv[0]))
