@@ -67,6 +67,7 @@ DISABLE_PERSISTENCE = False
 FORCE_RESCRAPE = False
 ENABLE_ALTMAIN = False
 ALLOW_COOKIED_COMMUNITY_TAB_SCRAPE = False
+CHECK_LIVE_ENDPOINT = True
 SCRAPER_SLEEP_INTERVAL = 60
 CHANNEL_SCRAPE_LIMIT = 30
 DUMP_DIR = 'dump'
@@ -79,6 +80,7 @@ downloadchatprgm = "../downloader.py"
 channelscrapecmd = "../scrape_channel_oo.sh"
 channelpostscrapecmd = "../scrape_community_tab.sh"
 channelmemberscrapecmd = "../scrape_membership_tab.sh"
+channellivescrapecmd = "../scrape_live_endpoint.sh"
 mainchannelsfile = "./channels.txt"
 watchdogprog = "../watchdog.sh"
 holoscrapecmd = 'wget -nv --load-cookies=../cookies-schedule-hololive-tv.txt https://schedule.hololive.tv/lives -O auto-lives_tz'
@@ -89,6 +91,12 @@ meta_lastresort_keys = {'_raw_player_response', '_raw_info_dict'}
 
 # For alt-main usage
 is_true_main = True
+
+
+def file_touch(path):
+    with open(path, 'a+'):
+        # touched
+        pass
 
 
 def _get_member_cookie_file(channel_id: str):
@@ -422,18 +430,20 @@ class AutoScraper:
                         if not line or line.strip().startswith(';'):
                             continue
 
-                        channel_info = line.split(';', 2)[0].split()
+                        channel_info = line.split(';', 3)[0].split()
                         if len(channel_info) == 1:
-                            channel_id, throttle = channel_info[0], 300.0
+                            channel_id, throttle, live_throttle = channel_info[0], 300.0, 100.0
                         elif len(channel_info) == 2:
-                            channel_id, throttle = channel_info[0], float(channel_info[1])
+                            channel_id, throttle, live_throttle = channel_info[0], float(channel_info[1]), 100.0
+                        elif len(channel_info) == 3:
+                            channel_id, throttle, live_throttle = channel_info[0], float(channel_info[1]), float(channel_info[2])
                         else:
                             print('warning: line from channels file has too many values', file=sys.stderr)
                             continue
 
                         if SUPERVERBOSE:
                             set_log_level('debug')
-                        self.scrape_and_process_channel(channel_id=channel_id, dlog=dlog, throttle=throttle)
+                        self.scrape_and_process_channel(channel_id=channel_id, dlog=dlog, throttle=throttle, live_throttle=live_throttle)
                         if SUPERVERBOSE:
                             set_log_level('warning')
 
@@ -611,7 +621,7 @@ class AutoScraper:
         channel.clear_batch()
 
     # TODO: rewrite
-    def process_channel_videos_ytdlp(self, /, channel: Channel, *, dlog: IO = None, is_membership=False) -> None:
+    def process_channel_videos_ytdlp(self, /, channel: Channel, *, dlog: IO = None, is_membership=False, is_live_endpoint=False, is_community=False) -> None:
         """ Read scraped channel video list, process each video ID, and persist the meta state. """
         if dlog is None:
             dlog = sys.stdout
@@ -625,6 +635,10 @@ class AutoScraper:
         allurl_file = "channel-cached/" + channel_id + ".url.all"
         if is_membership:
             allurl_file = "channel-cached/" + channel_id + ".url.mem.all"
+        elif is_live_endpoint:
+            allurl_file = "channel-cached/" + channel_id + ".url.live.all"
+        elif is_community:
+            allurl_file = "channel-cached/" + channel_id + ".url.tab.all"  # does this still work?
 
         channel.start_batch()
 
@@ -638,6 +652,10 @@ class AutoScraper:
                         should_filter = should_filter_video(video_id)
                         if is_membership:
                             word = 'member'
+                        elif is_live_endpoint:
+                            word = 'liveurl'
+                        elif is_community:
+                            word = 'community'
                         else:
                             word = 'main'
                         if should_filter and is_membership:
@@ -665,6 +683,10 @@ class AutoScraper:
                         if not metastatus_ok:
                             if is_membership:
                                 word = 'member'
+                            elif is_live_endpoint:
+                                word = 'liveurl'
+                            elif is_community:
+                                word = 'community'
                             else:
                                 word = 'main'
                             recall_video(video_id, context=self, filter_progress=True, id_source=f'channel:urllist:{word}', referrer_channel_id=channel_id)
@@ -723,7 +745,7 @@ class AutoScraper:
 
         channel.clear_batch()
 
-    def scrape_and_process_channel(self, channel_id, *, dlog: IO = None, throttle=300.0) -> None:
+    def scrape_and_process_channel(self, channel_id, *, dlog: IO = None, throttle=300.0, live_throttle=100.0) -> None:
         """ Scrape a channel, with fallbacks.
             Can be called standalone.
         """
@@ -756,6 +778,49 @@ class AutoScraper:
         # alt-main only
         if not is_true_main:
             use_ytdlp = True
+
+        def community_scrape(old_ts, final_ts):
+            # Scrape community tab page for links (esp. member stream links)
+            # Currently only try this when cookies are provided.
+            # TODO: use membership page instead, since it only includes (recent?) member videos and posts.
+            # NOTE: alt_main is a preferable solution and tries the above tab page.
+            # I believe this is a new feature by YouTube (~Nov 2021).
+            if ALLOW_COOKIED_COMMUNITY_TAB_SCRAPE and is_true_main:
+                scrape_start_timestamp = get_timestamp_now()
+
+                try:
+                    channel.batch_end_timestamp = old_ts
+                    if os.path.exists(channel_id + ".txt"):
+                        self.scrape_and_process_channel_ytdlp(channel, dlog=dlog, community_scrape=True, throttle=throttle)
+
+                finally:
+                    if channel.batch_end_timestamp == old_ts:
+                        channel.batch_end_timestamp = final_ts
+                    if channel.batch_end_timestamp < scrape_start_timestamp:
+                        channel.batch_end_timestamp = get_timestamp_now()
+
+                diff = channel.batch_end_timestamp - scrape_start_timestamp
+                print(f'channel scrape: channel {channel.channel_id}: ytdlp community scrape process took {diff:.3F} sec')
+
+        def live_endpoint_scrape(old_ts, final_ts):
+            # channel_id/live points to the most imminent non-premiere livestream
+            if CHECK_LIVE_ENDPOINT and is_true_main:
+                scrape_start_timestamp = get_timestamp_now()
+
+                try:
+                    channel.batch_end_timestamp = old_ts
+                    self.scrape_and_process_channel_ytdlp(channel, dlog=dlog, is_live_endpoint=True, throttle=live_throttle)
+
+                finally:
+                    if channel.batch_end_timestamp == old_ts:
+                        channel.batch_end_timestamp = final_ts
+                    if channel.batch_end_timestamp < scrape_start_timestamp:
+                        channel.batch_end_timestamp = get_timestamp_now()
+
+                diff = channel.batch_end_timestamp - scrape_start_timestamp
+                print(f'channel scrape: channel {channel.channel_id}: ytdlp live endpoint scrape process took {diff:.3F} sec')
+
+        channel_start_ts = channel.batch_end_timestamp
 
         if not use_ytdlp:
             try:
@@ -796,22 +861,10 @@ class AutoScraper:
             diff = channel.batch_end_timestamp - scrape_start_timestamp
             print(f'channel scrape: channel {channel.channel_id}: yt-dlp scrape process took {diff:.3F} sec')
 
-        # Scrape community tab page for links (esp. member stream links)
-        # Currently only try this when cookies are provided.
-        # TODO: use membership page instead, since it only includes (recent?) member videos and posts.
-        # NOTE: alt_main is a preferable solution and tries the above tab page.
-        # I believe this is a new feature by YouTube (~Nov 2021).
-        if ALLOW_COOKIED_COMMUNITY_TAB_SCRAPE:
-            scrape_start_timestamp = get_timestamp_now()
-
-            if os.path.exists(channel_id + ".txt"):
-                self.scrape_and_process_channel_ytdlp(channel, dlog=dlog, community_scrape=True, throttle=throttle)
-
-            if channel.batch_end_timestamp < scrape_start_timestamp:
-                channel.batch_end_timestamp = get_timestamp_now()
-
-            diff = channel.batch_end_timestamp - scrape_start_timestamp
-            print(f'channel scrape: channel {channel.channel_id}: ytdlp community scrape process took {diff:.3F} sec')
+        channel_end_ts = channel.batch_end_timestamp
+        live_endpoint_scrape(channel_start_ts, channel_end_ts)
+        channel_end_ts = channel.batch_end_timestamp
+        community_scrape(channel_start_ts, channel_end_ts)
 
     def scrape_and_process_channel_chatdownloader(self, /, channel: Channel, *, dlog: IO = None):
         """ Use chat_downloader's get_user_videos() to quickly get channel videos and live statuses. """
@@ -1085,7 +1138,7 @@ class AutoScraper:
 
         print(f"discovery: channels list (via chat_downloader): channel {channel.channel_id} new lives/total: " + report_text + f"{(valid_count)}/{skipped} across; {count} processed)")
 
-    def scrape_and_process_channel_ytdlp(self, /, channel: Channel, *, dlog: IO = None, community_scrape=False, is_membership=False, throttle=300.0):
+    def scrape_and_process_channel_ytdlp(self, /, channel: Channel, *, dlog: IO = None, community_scrape=False, is_membership=False, is_live_endpoint=False, throttle=300.0):
         """ Scrape and process a channel using yt-dlp, but throttle """
         channel_id = channel.channel_id
         if channel_id in self.channels:
@@ -1094,24 +1147,36 @@ class AutoScraper:
                 print(f'warning: channel batch-end timestamp is in the future: ahead by {(-elapsed)} (channel: {channel_id})', file=sys.stderr)
                 # Correct timestamps that are too far in the future
                 channel.batch_end_timestamp = min(channel.batch_end_timestamp, get_timestamp_now() + throttle / 2)
+            if throttle < 0:
+                print(f'notice: skipping yt-dlp channel scrape (channel: {channel_id}) as throttle time is negative ({throttle:0.3F})', file=sys.stderr)
+                return
             if elapsed < throttle:
                 print(f'notice: skipping yt-dlp channel scrape (channel: {channel_id}) as time elapsed is too short ({elapsed:0.3F} < {throttle})', file=sys.stderr)
                 return
 
-        self.invoke_channel_scraper_ytdlp(channel, membership_scrape=is_membership)
-        self.process_channel_videos_ytdlp(channel, dlog=dlog, is_membership=is_membership)
+        self.invoke_channel_scraper_ytdlp(channel, membership_scrape=is_membership, live_scrape=is_live_endpoint, community_scrape=community_scrape)
+        self.process_channel_videos_ytdlp(channel, dlog=dlog, is_membership=is_membership, is_live_endpoint=is_live_endpoint, is_community=community_scrape)
 
-    def invoke_channel_scraper_ytdlp(self, /, channel: Channel, *, community_scrape=False, membership_scrape=False):
+    def invoke_channel_scraper_ytdlp(self, /, channel: Channel, *, membership_scrape=False, live_scrape=False, community_scrape=False):
         """ Scrape the channel for latest videos and batch-fetch meta state. """
         # Note: some arbitrary limits are set in the helper program that may need tweaking.
         allmeta_file = "channel-cached/" + channel.channel_id + ".meta.new"
 
         if not community_scrape and not membership_scrape:
-            print("Scraping channel " + channel.channel_id)
-            subprocess.run(channelscrapecmd + " " + channel.channel_id, shell=True)
+            if not live_scrape:
+                print("Scraping channel " + channel.channel_id)
+                subprocess.run(channelscrapecmd + " " + channel.channel_id, shell=True)
+            else:
+                print("Scraping channel /live endpoint: " + channel.channel_id)
+                subprocess.run(channellivescrapecmd + " " + channel.channel_id, shell=True)
+                allmeta_file = "channel-cached/" + channel.channel_id + ".meta.live.new"
+                # hotfix
+                file_touch(f"channel-cached/{channel.channel_id}.url.live.all")
+                file_touch(f"channel-cached/{channel.channel_id}.meta.live.new")
         elif not membership_scrape:
             print("Scraping channel community pages " + channel.channel_id)
             subprocess.run(channelpostscrapecmd + " " + channel.channel_id, shell=True)
+            allmeta_file = "channel-cached/" + channel.channel_id + ".meta.tab.new"
         else:
             print("Scraping channel membership pages " + channel.channel_id)
             subprocess.run(channelmemberscrapecmd + " " + channel.channel_id, shell=True)
@@ -1135,6 +1200,8 @@ class AutoScraper:
                 except Exception:
                     if community_scrape:
                         print("warning: exception in channel post scrape task (corrupt meta?)", file=sys.stderr)
+                    elif live_scrape:
+                        print("warning: exception in channel live endpoint scrape task (corrupt meta?)", file=sys.stderr)
                     else:
                         print("warning: exception in channel scrape task (corrupt meta?)", file=sys.stderr)
                     traceback.print_exc()
@@ -1163,6 +1230,8 @@ class AutoScraper:
                         print(f"ignoring ytmeta from channel community tab scrape (video = {video_id}, {metafile_exists = })")
                     elif membership_scrape:
                         print(f"ignoring ytmeta from channel membership tab scrape (video = {video_id}, {metafile_exists = })")
+                    elif live_scrape:
+                        print(f"ignoring ytmeta from channel live endpoint scrape (video = {video_id}, {metafile_exists = })")
                     else:
                         print(f"ignoring ytmeta from channel scrape (video = {video_id}, {metafile_exists = })")
 
