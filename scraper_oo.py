@@ -77,7 +77,7 @@ SUPERVERBOSE = True
 
 downloadmetacmd = "../yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
 downloadchatprgm = "../downloader.py"
-channelscrapecmd = "../scrape_channel_oo.sh"
+channelscrapecmd = "../scrape_channel_new.sh"
 channelpostscrapecmd = "../scrape_community_tab.sh"
 channelmemberscrapecmd = "../scrape_membership_tab.sh"
 channellivescrapecmd = "../scrape_live_endpoint.sh"
@@ -820,6 +820,7 @@ class AutoScraper:
                 diff = channel.batch_end_timestamp - scrape_start_timestamp
                 print(f'channel scrape: channel {channel.channel_id}: ytdlp live endpoint scrape process took {diff:.3F} sec')
 
+        yt_dlp_timestamp = channel.batch_end_timestamp
         channel_start_ts = channel.batch_end_timestamp
 
         if not use_ytdlp:
@@ -835,6 +836,7 @@ class AutoScraper:
                         print(channel.batch, file=sys.stderr)
                         channel.clear_batch()
                     use_ytdlp = True
+                    channel.batch_end_timestamp = yt_dlp_timestamp
                 else:
                     if channel.batching:
                         if len(channel.batch) > 0:
@@ -852,6 +854,9 @@ class AutoScraper:
         if use_ytdlp:
             scrape_start_timestamp = get_timestamp_now()
             is_membership = not is_true_main
+
+            if yt_dlp_timestamp < scrape_start_timestamp:
+                channel.batch_end_timestamp = yt_dlp_timestamp
 
             self.scrape_and_process_channel_ytdlp(channel, dlog=dlog, is_membership=is_membership, throttle=throttle)
 
@@ -897,7 +902,7 @@ class AutoScraper:
         status_hints = []
 
         # Subcategorization on "Videos" tab
-        video_categories = ['upcoming', 'live', 'all', 'past']
+        video_categories = ['upcoming', 'live']
 
         counters_seen: Dict[str, Any] = dict(map(lambda e: (e, 0), video_categories))
         counters: Dict[str, Any] = dict(map(lambda e: (e, 0), video_categories))
@@ -919,6 +924,8 @@ class AutoScraper:
                 try:
                     perpage_count = 0
                     time.sleep(ATTEMPT_DELAY)
+                    # YouTube's redesign has broken this badly; chat_downloader needs to be patched,
+                    # but also the concept of video_status will likely not work as indended.
                     for basic_video_details in youtube.get_user_videos(channel_id=channel.channel_id, video_status=video_status, params={'max_attempts': 3}):
                         attempts_left -= 1
                         time.sleep(PAGE_DELAY)
@@ -1080,6 +1087,9 @@ class AutoScraper:
 
         channel.end_batch()
 
+        if not seen_vids:
+            raise RuntimeError('did not discover any videos with chat_downloader; will attempt with yt-dlp')
+
         for video_id, status_hint in status_hints:
             if video_id not in self.lives:
                 # Don't create new video objects needlessly, else they will be rescraped.
@@ -1133,7 +1143,7 @@ class AutoScraper:
             print('channel scrape: timings:', timings)
 
         report_text = ""
-        for vs in ['upcoming', 'live', 'all']:
+        for vs in ['upcoming', 'live']:
             report_text += f"{vs} {counters[vs]}/{counters_seen[vs]}; "
 
         print(f"discovery: channels list (via chat_downloader): channel {channel.channel_id} new lives/total: " + report_text + f"{(valid_count)}/{skipped} across; {count} processed)")
@@ -1573,9 +1583,10 @@ def convert_ytdlp_status_to_scraper_status(live_status: str):
         return 'live'
     if live_status == 'is_upcoming':
         return 'prelive'
-    if live_status == 'was_live':
+    if live_status in ('was_live', 'post_live'):
         return 'postlive'
     if live_status == 'not_live':
+        # warning: yt-dlp flags premieres as uploads.
         return 'upload'
 
     return 'unknown'
@@ -1830,6 +1841,12 @@ def process_ytmeta(video: Video):
 
     elif video.meta.get('is_livestream') or video.meta.get('live_endtime'):
         # note: premieres also have a starttime and endtime
+        video.set_status('postlive')
+        if video.progress == 'unscraped':
+            video.set_progress('missed')
+
+    elif (video.meta.get('subtitles') or {}).get('live_chat'):
+        # note: premieres should have live_chat. Handles weird yt-dlp response.
         video.set_status('postlive')
         if video.progress == 'unscraped':
             video.set_progress('missed')
@@ -2172,7 +2189,11 @@ def delete_ytmeta_raw(video: Video, *, context: AutoScraper = None, suffix: str 
     """ Delete ytmeta['raw'] field that eats memory; count deletions """
     general_stats = getattr(context, 'general_stats', {})
     if not video.did_meta_flush and video.meta is not None:
-        print(f'warning: attempting to clear rawmeta for video {video.video_id} without flushing, meta may be lost.', file=sys.stderr)
+        if video.rawmeta:
+            nullness = '(non-null)'
+        else:
+            nullness = '(null)'
+        print(f'warning: attempting to clear {nullness} rawmeta for video {video.video_id} without flushing, meta may be lost.', file=sys.stderr)
 
     # unprocessable rawmeta gets saved here as a last resort; we don't want it loaded since it won't be used.
     if video.meta and meta_lastresort_keys.intersection(video.meta):
