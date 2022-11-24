@@ -62,14 +62,7 @@ def extract_next_notification_continuation_data(renderer):
                           expected_type=str)
     if not ctoken:
         return
-    return build_notification_continuation_query(ctoken)
-
-
-def build_notification_continuation_query(ctoken):
-    query = {
-        'ctoken': ctoken
-    }
-    return query
+    return {'ctoken': ctoken}
 
 
 def notification_menu_entries(ytie, headers, max_requests=5):
@@ -88,6 +81,8 @@ def notification_menu_entries(ytie, headers, max_requests=5):
             entry = extract_notification(notification)
             if entry:
                 entries.append(entry)
+            else:
+                entries.append({'raw': notification})
         if not continuation_list[0]:
             break
 
@@ -113,7 +108,8 @@ def get_notifications(cookiefile, request_count=2, id_outfile='video_ids.txt'):
         for entry in notification_menu_entries(ytie, headers, request_count):
             count += 1
             print(json.dumps(entry, ensure_ascii=False))
-            print(entry['video_id'], file=fp)
+            if 'video_id' in entry:
+                print(entry['video_id'], file=fp)
 
     timenow = time.asctime()
     print(f'{timenow}: got {count} video entries', file=sys.stderr)
