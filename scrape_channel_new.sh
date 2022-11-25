@@ -22,7 +22,7 @@ download_video_list() {
     key="${2:?}"
     url="${3:-https://www.youtube.com/channel/"$channelbase$suffix"}"
     # 100 limit to avoid too many rather useless paginations
-    "$ytdlp_cmd" -s -q -j --sleep-requests 0.5 --ignore-no-formats-error --flat-playlist --playlist-end 50 -- "$url" >"${tmppre}.$key"
+    "$ytdlp_cmd" -s -q -j --sleep-requests 0.01 --ignore-no-formats-error --flat-playlist --playlist-end 50 -- "$url" >"${tmppre}.$key"
     ecode=$?
     if [[ "$ecode" != 0 ]]; then
         echo "(channel scraper) warning: fetch for ${tmppre}.$key exited with error: $ecode" >&2
