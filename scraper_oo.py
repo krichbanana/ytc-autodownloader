@@ -67,6 +67,7 @@ DISABLE_PERSISTENCE = False
 FORCE_RESCRAPE = False
 ENABLE_ALTMAIN = False
 ALLOW_COOKIED_COMMUNITY_TAB_SCRAPE = False
+USE_CHATDOWNLOADER_TAB_EXTRACTOR = True
 CHECK_LIVE_ENDPOINT = True
 SCRAPER_SLEEP_INTERVAL = 60
 CHANNEL_SCRAPE_LIMIT = 30
@@ -750,7 +751,7 @@ class AutoScraper:
             Can be called standalone.
         """
         channel = None
-        use_ytdlp = False
+        use_ytdlp = not USE_CHATDOWNLOADER_TAB_EXTRACTOR
         throttle = float(throttle)
         scrape_start_timestamp = get_timestamp_now()
 
