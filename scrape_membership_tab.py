@@ -95,7 +95,8 @@ write_time_to_file(f'{next_scrape_file}', next_time)
 url = f"https://www.youtube.com/channel/{channelbase}{suf_membership}"
 
 # Get raw data on membership videos from membership tab
-proc = subprocess.run(f'"{ytdlp_cmd}" -s -q -j --cookies="{cookie_file}" --sleep-requests 0.1 --extractor-retries 1 --ignore-no-formats-error --flat-playlist "{url}" | grep -vF /channel/ >"{tmppre}.membership"', shell=True)
+command_to_run = f'"{ytdlp_cmd}" -s -q -j --cookies="{cookie_file}" --sleep-requests 0.1 --extractor-retries 1 --ignore-no-formats-error --flat-playlist -- "{url}" >"{tmppre}.membership"'
+proc = subprocess.run(command_to_run, shell=True)
 curr_time = int(get_timestamp_now())  # epoch time (seconds)
 if proc.returncode != 0:
     print(f"(channel membership tab scraper) warning: fetch for {tmppre} (membership tab) exited with error: {proc.returncode}", file=sys.stderr)
@@ -163,6 +164,7 @@ if file_empty(f"{tmppre}.membership.url"):
 os.makedirs('channel-cached', exist_ok=True)
 # Avoid reading membership tab results into scraper_oo
 file_touch(f"channel-cached/{channelbase}.url.mem.all")
+file_touch(f"channel-cached/{channelbase}.meta.mem.new")
 file_touch(f"{channelbase}.list.url")
 proc = subprocess.run(f'sort "channel-cached/{channelbase}.url.mem.all" | uniq > "channel-cached/{channelbase}.url.mem.all.tmp"', shell=True)
 if proc.returncode != 0:
