@@ -70,7 +70,7 @@ ALLOW_COOKIED_COMMUNITY_TAB_SCRAPE = False
 USE_CHATDOWNLOADER_TAB_EXTRACTOR = True
 CHECK_LIVE_ENDPOINT = True
 SCRAPER_SLEEP_INTERVAL = 60
-CHANNEL_SCRAPE_LIMIT = 30
+CHANNEL_SCRAPE_LIMIT = 24  # new pagination size is 12, judging from the UI
 DUMP_DIR = 'dump'
 DUMP_DIR_ALT = 'dump_alt'
 SUPERVERBOSE = True
@@ -887,8 +887,8 @@ class AutoScraper:
             youtube = channel.youtube = downloader.create_session(YouTubeChatDownloader)
 
         limit = CHANNEL_SCRAPE_LIMIT
-        PAGE_DELAY = 0.004
-        ATTEMPT_DELAY = 0.06
+        PAGE_DELAY = 0.010
+        ATTEMPT_DELAY = 0.10
         count = 0
         perpage_count = 0
         valid_count = 0
@@ -897,13 +897,12 @@ class AutoScraper:
         seen_vids: Set[str] = set()
         lives = self.lives
 
-        last_batch = (channel.batch or set()).copy()
         channel.start_batch()
 
         status_hints = []
 
-        # Subcategorization on "Videos" tab
-        video_categories = ['upcoming', 'live']
+        # Tab name (in url)
+        video_categories = ['live', 'videos']
 
         counters_seen: Dict[str, Any] = dict(map(lambda e: (e, 0), video_categories))
         counters: Dict[str, Any] = dict(map(lambda e: (e, 0), video_categories))
@@ -911,23 +910,18 @@ class AutoScraper:
         scrape_start = get_timestamp_now()
         timings = []
 
-        # We don't just check 'all' since the list used may be slow to update.
-        for video_status in video_categories:
-            if video_status == 'past':
-                if bool(len(last_batch - seen_vids)):
-                    print('channel scraper: videos disappeared since last batch; checking past videos')
-                else:
-                    continue
-
+        # Categories are now broken up into tabs; livestreams can no longer be sorted by state.
+        for video_type in video_categories:
             scrape_start = get_timestamp_now()
-            attempts_left = 3
+            attempts_left = 2
             while attempts_left > 0:
                 try:
                     perpage_count = 0
                     time.sleep(ATTEMPT_DELAY)
                     # YouTube's redesign has broken this badly; chat_downloader needs to be patched,
-                    # but also the concept of video_status will likely not work as indended.
-                    for basic_video_details in youtube.get_user_videos(channel_id=channel.channel_id, video_status=video_status, params={'max_attempts': 3}):
+                    # choosing pages by video_status no longer works.
+                    # Excesss pagination may also be an issue...
+                    for basic_video_details in youtube.get_user_videos(channel_id=channel.channel_id, video_type=video_type, params={'max_attempts': 3}):
                         attempts_left -= 1
                         time.sleep(PAGE_DELAY)
                         status = 'unknown'
@@ -954,7 +948,7 @@ class AutoScraper:
                             if video_id is not None and video_id in lives and lives[video_id].progress not in {'unscraped', 'aborted'} and lives[video_id].status not in {'postlive', 'upload'}:
                                 print(f"warning: status hint extraction: no view count visible (likely 0). {seen_vids = } ... {basic_video_details = })", file=sys.stderr)
                             elif video_id not in lives:
-                                video = self.get_or_init_video(video_id, id_source=f'channel:{video_status}', referrer_channel_id=channel.channel_id)
+                                video = self.get_or_init_video(video_id, id_source=f'channel:tab:{video_type}', referrer_channel_id=channel.channel_id)
                                 print(f"warning: status hint extraction: no status hint and new video, doing direct video scrape: {video_id}", file=sys.stderr)
                                 rescrape_chatdownloader(video, channel=channel, youtube=youtube)
                                 just_scraped = True
@@ -983,7 +977,7 @@ class AutoScraper:
                                     count += 1
                                     seen_vids.add(video_id)
                                 if status != 'unknown' and not (video_id in lives and lives[video_id].progress != 'unscraped'):
-                                    counters_seen[video_status] += 1
+                                    counters_seen[status] += 1
                                     skipped += 1
                                 break
 
@@ -1000,7 +994,7 @@ class AutoScraper:
                             continue
 
                         # video isn't an archive (is prelive/live)
-                        counters_seen[video_status] += 1
+                        counters_seen[status] = counters_seen.setdefault(status, 0) + 1
 
                         if video_id in lives and lives[video_id].progress != 'unscraped':
                             # already known (esp. if listed in 'live' list)
@@ -1011,12 +1005,12 @@ class AutoScraper:
                         valid_count += 1
 
                         if status != 'unknown':
-                            print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}, list: {video_status}): " + video_id, file=sys.stdout, flush=True)
+                            print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}, list: {video_type}): " + video_id, file=sys.stdout, flush=True)
                             if dlog != sys.stdout:
                                 print(f"discovery: new live listed (chat_downloader channel extraction, status: {status}): " + video_id, file=dlog, flush=True)
 
-                        video = self.get_or_init_video(video_id, id_source=f'channel:{video_status}', referrer_channel_id=channel.channel_id)
-                        counters[video_status] += 1
+                        video = self.get_or_init_video(video_id, id_source=f'channel:tab:{video_type}', referrer_channel_id=channel.channel_id)
+                        counters_seen[status] = counters_seen.setdefault(status, 0) + 1
 
                         channel.add_video(video)
 
@@ -1055,7 +1049,7 @@ class AutoScraper:
                             break
 
                     if count >= limit * len(video_categories):
-                        print(f"limit of {limit} reached")
+                        print(f"limit of {limit}x{len(video_categories)} reached")
                         break
 
                 except UserNotFound:
@@ -1145,7 +1139,7 @@ class AutoScraper:
 
         report_text = ""
         for vs in ['upcoming', 'live']:
-            report_text += f"{vs} {counters[vs]}/{counters_seen[vs]}; "
+            report_text += f"{vs} {counters.setdefault(vs, 0)}/{counters_seen.setdefault(vs, 0)}; "
 
         print(f"discovery: channels list (via chat_downloader): channel {channel.channel_id} new lives/total: " + report_text + f"{(valid_count)}/{skipped} across; {count} processed)")
 
@@ -1196,6 +1190,7 @@ class AutoScraper:
         with open(allmeta_file) as allmeta:
             metalist = []
 
+            # The meta file must have one meta per line, as suggested by readlines()
             for jsonres in allmeta.readlines():
                 rawjson = None
                 try:
