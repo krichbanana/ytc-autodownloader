@@ -64,6 +64,7 @@ except ImportError:
 
 # Debug switch
 DISABLE_PERSISTENCE = False
+BLOCK_WRITES = False
 FORCE_RESCRAPE = False
 ENABLE_ALTMAIN = False
 ALLOW_COOKIED_COMMUNITY_TAB_SCRAPE = False
@@ -191,6 +192,10 @@ class AutoScraper:
         if not is_true_main:
             return
 
+        if BLOCK_WRITES:
+            print('warning: update_lives_status_fast_source: writes blocked, cancelling update task.', file=sys.stderr)
+            return
+
         with open("discovery.txt", "a") as dlog:
             try:
                 try:
@@ -260,6 +265,10 @@ class AutoScraper:
     def update_lives_status_slow_source(self, /):
         if not is_true_main:
             self.update_lives_status_cookied()
+            return
+
+        if BLOCK_WRITES:
+            print('warning: update_lives_status_slow_source: writes blocked, cancelling update task.', file=sys.stderr)
             return
 
         with open("discovery.txt", "a") as dlog:
@@ -626,6 +635,10 @@ class AutoScraper:
         """ Read scraped channel video list, process each video ID, and persist the meta state. """
         if dlog is None:
             dlog = sys.stdout
+
+        if BLOCK_WRITES:
+            dlog = sys.stdout
+            print('warning: processing yt-dlp scrape results; writes are blocked, therefore results are likely stale and none are saved to disk.', file=sys.stderr)
 
         newlives = 0
         knownlives = 0
@@ -1167,6 +1180,10 @@ class AutoScraper:
         # Note: some arbitrary limits are set in the helper program that may need tweaking.
         allmeta_file = "channel-cached/" + channel.channel_id + ".meta.new"
 
+        if BLOCK_WRITES:
+            print('warning: yt-dlp channel scraper: cannot scrape; writes are blocked', file=sys.stderr)
+            return
+
         if not community_scrape and not membership_scrape:
             if not live_scrape:
                 print("Scraping channel " + channel.channel_id)
@@ -1540,12 +1557,13 @@ def persist_basic_state(video: Video, *, context: AutoScraper, clobber=True, clo
 
 def _check_meta_persistence_enabled(video: Video):
     """ Check if DISABLE_PERSISTENCE is set and run handling.
+        If BLOCK_WRITES is set, then also treat DISABLE_PERSISTENCE as set.
         Return true if it is not set.
     """
     statefile = 'by-video-id/' + video.video_id
 
     # Debug switch
-    if DISABLE_PERSISTENCE:
+    if DISABLE_PERSISTENCE or BLOCK_WRITES:
         print('NOT updating ' + statefile)
         if not video.did_meta_flush:
             print("  meta flush reason (no-op):", video.meta_flush_reason)
@@ -2077,6 +2095,10 @@ def process_dlpid_queue(*, context: AutoScraper):
 
 
 def invoke_downloader(video: Video, *, context: AutoScraper):
+    if BLOCK_WRITES:
+        print('warning: blocked downloader; writes are blocked.', file=sys.stder)
+        return
+
     try:
         video_id = video.video_id
 
@@ -2430,6 +2452,10 @@ def handle_debug_signal(signum, frame):
             print('warning: got debug signal, but mainpid doesn\'t match', file=sys.stderr)
             return
 
+    if BLOCK_WRITES:
+        print('warning: cannot dump lives, writes are suspended.', file=sys.stderr)
+        return
+
     dest_dir = DUMP_DIR
     if not is_true_main:
         dest_dir = DUMP_DIR_ALT
@@ -2452,6 +2478,10 @@ def handle_special_signal(signum, frame):
     global mainpid
     if os.getpid() != mainpid:
         print('warning: got reexec signal, but mainpid doesn\'t match', file=sys.stderr)
+        return
+
+    if BLOCK_WRITES:
+        print('warning: cannot dump lives, writes are suspended; reexec cancelled', file=sys.stderr)
         return
 
     statuslog.close()
@@ -2644,21 +2674,24 @@ def main(context: AutoScraper):
     modtime = dt.datetime.fromtimestamp(os.stat(sys.argv[0]).st_mtime)
     init_status = f"{mainpid = }. program modtime: {modtime}; commit: {commit}"
     print(init_status)
-    with open('mainpid_init_status.txt', 'w') as fp:
-        fp.write(init_status)
+    if not BLOCK_WRITES:
+        with open('mainpid_init_status.txt', 'w') as fp:
+            fp.write(init_status)
 
     fast_startup = False
     if len(sys.argv) == 2 and sys.argv[1] == 'reexec':
         print("reexec: number of inherited children: " + str(len(mp.active_children())))   # side effect: joins finished tasks -- exec doesn't seem to inherit children
         fast_startup = load_dump()
 
-    if not fast_startup:
+    if not fast_startup and not BLOCK_WRITES:
         # Prep storage and persistent state directories
         os.makedirs('oo', exist_ok=True)
         os.chdir('oo')
         os.makedirs('by-video-id', exist_ok=True)
         os.makedirs('chat-logs', exist_ok=True)
         os.makedirs('pid', exist_ok=True)
+    elif not fast_startup:
+        os.chdir('oo')
 
     signal.signal(signal.SIGUSR1, handle_special_signal)
     signal.signal(signal.SIGUSR2, handle_debug_signal)
@@ -2669,11 +2702,16 @@ def main(context: AutoScraper):
     write_cgroup(mainpid)
 
     nowtimestamp = str(get_timestamp_now())
-    with open("discovery.txt", "a") as dlog:
-        print("program started: " + nowtimestamp, file=dlog, flush=True)
-        dlog.flush()
+    if not BLOCK_WRITES:
+        with open("discovery.txt", "a") as dlog:
+            print("program started: " + nowtimestamp, file=dlog, flush=True)
+            dlog.flush()
     global statuslog
-    statuslog = open("status.txt", "a")
+    if not BLOCK_WRITES:
+        statuslog = open("status.txt", "a")
+    else:
+        print('warning: BLOCK_WRITES active, statuslog redirected to stdout.', file=sys.stderr)
+        statuslog = sys.stdout
     print("program started: " + nowtimestamp, file=statuslog)
     statuslog.flush()
     os.fsync(statuslog.fileno())
