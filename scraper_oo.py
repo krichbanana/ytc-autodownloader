@@ -1051,7 +1051,7 @@ class AutoScraper:
                                 persist_meta(video, context=self, fresh=True, clobber_pid=False)
 
                             except VideoNotFound:
-                                print(f'warning: "Video not found" when scraping videos tab via chat_downloader; video retries left: {vid_attempts_left}', file=sys.stderr)
+                                print(f'warning: "Video not found" when scraping "{video_type}" tab via chat_downloader; video retries left: {vid_attempts_left}', file=sys.stderr)
                                 time.sleep(0.1)
 
                             else:
@@ -1066,7 +1066,7 @@ class AutoScraper:
                         break
 
                 except UserNotFound:
-                    print(f'warning: "User not found" when scraping videos tab via chat_downloader; retries left: {attempts_left}', file=sys.stderr)
+                    print(f'warning: "User not found" when scraping "{video_type}" tab via chat_downloader; retries left: {attempts_left}', file=sys.stderr)
                     # we may not actually enter the for body, and if the channel is terminated then...
                     attempts_left -= 1
 
@@ -1075,13 +1075,14 @@ class AutoScraper:
                     # requests.exceptions.RequestException but is instead raised by urllib. This mean certain exceptions
                     # can be unhandled; SSLError is the most common one.
                     # python-requests 2.27.1+16+g79f60274 (not exact) should fix this; 2.27.1 is still broken.
-                    print(f'warning: SSL error when scraping videos tab via chat_downloader; retries left: {attempts_left}', file=sys.stderr)
+                    print(f'warning: SSL error when scraping "{video_type}" tab via chat_downloader; retries left: {attempts_left}', file=sys.stderr)
                     attempts_left -= 1
 
                 except NoVideos:
-                    print('warning: "No videos" when scraping videos tab via chat_downloader; not retrying', file=sys.stderr)
+                    print(f'warning: "No videos" when scraping "{video_type}" tab via chat_downloader; not retrying', file=sys.stderr)
                     attempts_left = 0
-                    raise
+                    if video_type != video_categories[-1]:
+                        break
 
                 else:
                     break

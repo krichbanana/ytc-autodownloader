@@ -39,6 +39,11 @@ def extract_video_id_from_yturl(href, strict=False):
         return None
 
 
+def get_channel_uploads_playlist(channel_id):
+    if channel_id.startswith('UC'):
+        return 'https://www.youtube.com/playlist?list=UU' + channel_id[2:]
+
+
 def create_file_lock(file):
     """ Create the named file and do a blocking lock, writing the current PID
         and returning an int FD """
