@@ -683,14 +683,10 @@ class AutoScraper:
                     video = self.lives.get(video_id)
                     if not video:
                         # this will screw up our counters but it's better than skipping the loop
-                        if not is_membership:
-                            print(f'warning: video not loaded, skipping: {video_id}', file=sys.stderr)
-                        else:
-                            print(f'warning: video not loaded, loading now: {video_id}', file=sys.stderr)
-                            recall_video(video_id, context=self, filter_progress=False, id_source=f'channel:urllist:{word}:disk', disk_only=True)
-                            video = self.get_or_init_video(video_id, id_source=f'channel:urllist:{word}')
-
-                    channel.add_video(video)
+                        print(f'warning: video not loaded, loading now: {video_id}', file=sys.stderr)
+                        recall_video(video_id, context=self, filter_progress=False, id_source=f'channel:urllist:{word}:disk', disk_only=True)
+                        # We need a video in order for filter_progress to do its magic (in case of a new upload, for example).
+                        video = self.get_or_init_video(video_id, id_source=f'channel:urllist:{word}')
 
                     if not channel.did_discovery_print:
                         metastatus_ok = video.meta is not None
