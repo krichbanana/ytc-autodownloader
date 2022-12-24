@@ -403,6 +403,7 @@ class Downloader:
 
                         if errors == 1:
                             print('(downloader) Waiting 60 seconds before retrying:', video_id)
+                            notify_send('downloader waiting', f'{video_id} ({ytstatus[0]} {ytstatus[1]}): {title} / {author} / {timing_text} (cached)', timeout_msec=15000)
 
                         elif errors > max_retries:
                             print('(downloader) Retry limit reached:', video_id)
