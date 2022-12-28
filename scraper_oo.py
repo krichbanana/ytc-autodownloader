@@ -423,7 +423,7 @@ class AutoScraper:
 
             video = self.get_or_init_video(video_id, id_source='holoschedule:api')
             if video.progress == 'unscraped':
-                print("discovery: (api) new live listed (live: {is_live}):", video_id, file=dlog, flush=True)
+                print(f"discovery: (api) new live listed (live: {is_live}):", video_id, file=dlog, flush=True)
                 if dlog != sys.stdout:
                     print(f"discovery: (api) new live listed (live: {is_live}):", video_id, file=sys.stdout, flush=True)
                 newlives += 1
@@ -2473,7 +2473,7 @@ def process_one_status(video: Video, *, context: AutoScraper, first=False, just_
             delete_ytmeta_raw(video, context=context)
 
     else:
-        print("warning: new downloader status is weird state '{video.progress}': " + video_id, file=statuslog)
+        print(f"warning: new downloader status is weird state '{video.progress}': " + video_id, file=statuslog)
 
     if not video.did_meta_flush:
         print("warning: didn't flush meta for video; flushing now", file=sys.stderr)
