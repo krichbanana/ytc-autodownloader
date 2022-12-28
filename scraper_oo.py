@@ -86,6 +86,7 @@ channellivescrapecmd = "../scrape_live_endpoint.sh"
 mainchannelsfile = "./channels.txt"
 watchdogprog = "../watchdog.sh"
 holoscrapecmd = 'wget -nv --load-cookies=../cookies-schedule-hololive-tv.txt https://schedule.hololive.tv/lives -O auto-lives_tz'
+hololyzerscrapecmd = 'wget -nv https://www.hololyzer.net/youtube/realtime/ -O auto-hololyzer-realtime'
 holoscrape_api_cmd = "wget -nv https://schedule.hololive.tv/api/list/1 -O - | jq '[.dateGroupList|.[]|.videoList|.[]|{datetime,isLive,platformType,url,title,name}|select(.platformType == 1)]' >| auto-lives_filt.json"
 
 
@@ -225,6 +226,12 @@ class AutoScraper:
                     print("warning: exception during holoschedule api fetch. Network error?")
                     traceback.print_exc()
 
+                try:
+                    self.update_lives_status_hololyzer(dlog=dlog)
+                except Exception:
+                    print("warning: exception during hololyzer scrape. Network error?")
+                    traceback.print_exc()
+
                 self.holoschedule_metachannel.end_batch()
 
                 # set difference
@@ -333,6 +340,55 @@ class AutoScraper:
         print("discovery: holoschedule: old lives:", str(oldlives))
 
         print(f'holoschedule task: took {diff:.03F} seconds')
+
+    def update_lives_status_hololyzer(self, /, *, dlog: IO = None) -> None:
+        """ Process hololyzer, which updates independly of the holoschedule. """
+        # Find all valid hyperlinks to youtube videos
+        soup = get_hololyzer_html()
+        newlives = 0
+        oldlives = 0
+        currentlives = 0
+
+        if dlog is None:
+            dlog = sys.stdout
+
+        update_start = get_timestamp_now()
+
+        for link in soup.find_all('a'):
+            # Extract any link
+            href = link.get('href')
+            video_id = extract_video_id_from_yturl(href, strict=True)
+
+            if video_id is None:
+                continue
+
+            if video_id not in self.lives:
+                should_filter = should_filter_video(video_id)
+                if should_filter:
+                    # filter_progress excluded meta, which means we don't keep to keep this video around.
+                    oldlives += 1
+                    continue
+
+                recall_video(video_id, context=self, filter_progress=True, id_source='hololyzer:html:disk', disk_only=True)
+
+            video = self.get_or_init_video(video_id, id_source='hololyzer:html')
+            if video.progress == 'unscraped':
+                print("discovery: (htmlscrape 3p) new live listed:", video_id, file=dlog, flush=True)
+                if dlog != sys.stdout:
+                    print("discovery: (htmlscrape 3p) new live listed:", video_id, file=sys.stdout, flush=True)
+                newlives += 1
+            else:
+                # known (not new) and current (not old) live listed
+                currentlives += 1
+
+        update_end = get_timestamp_now()
+        diff = update_end - update_start
+
+        print("discovery: hololyzer: new lives:", str(newlives))
+        print("discovery: hololyzer: current lives:", str(currentlives))
+        print("discovery: hololyzer: old lives:", str(oldlives))
+
+        print(f'hololyzer task: took {diff:.03F} seconds')
 
     def update_lives_status_holoschedule_api(self, /, *, dlog: IO = None) -> None:
         jsonlist = get_hololivetv_api_json()
@@ -1312,6 +1368,21 @@ def get_hololivetv_html():
 
     soup = BeautifulSoup(html_doc, 'html.parser')
     with open("auto-lives_tz", "wb") as fp:
+        fp.write(soup.prettify().encode())
+
+    return soup
+
+
+def get_hololyzer_html():
+    """ Get the latest html page of hololyzer's self-generated schedule """
+    subprocess.run(hololyzerscrapecmd, shell=True)
+
+    html_doc = ''
+    with open("auto-hololyzer-realtime", "rb") as fp:
+        html_doc = fp.read()
+
+    soup = BeautifulSoup(html_doc, 'html.parser')
+    with open("auto-hololyzer-realtime-out", "wb") as fp:
         fp.write(soup.prettify().encode())
 
     return soup
