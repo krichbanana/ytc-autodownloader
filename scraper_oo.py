@@ -18,6 +18,14 @@ from typing import (
     Set,
     Tuple
 )
+import requests
+from requests.adapters import HTTPAdapter
+from requests.exceptions import (
+    RequestException,
+    Timeout,
+    ConnectionError
+)
+from urllib3.util.retry import Retry
 
 from bs4 import BeautifulSoup  # type: ignore
 from urllib3.exceptions import SSLError  # type: ignore
@@ -87,6 +95,8 @@ mainchannelsfile = "./channels.txt"
 watchdogprog = "../watchdog.sh"
 holoscrapecmd = 'wget -nv --load-cookies=../cookies-schedule-hololive-tv.txt https://schedule.hololive.tv/lives -O auto-lives_tz'
 hololyzerscrapecmd = 'wget -nv https://www.hololyzer.net/youtube/realtime/ -O auto-hololyzer-realtime'
+hololyzer_host = 'https://www.hololyzer.net'
+hololyzer_paths = ('/youtube/realtime/', '/holostars/realtime/')
 holoscrape_api_cmd = "wget -nv https://schedule.hololive.tv/api/list/1 -O - | jq '[.dateGroupList|.[]|.videoList|.[]|{datetime,isLive,platformType,url,title,name}|select(.platformType == 1)]' >| auto-lives_filt.json"
 
 
@@ -162,7 +172,17 @@ def should_filter_video(video_id: str):
 
 class AutoScraper:
     """ Main context storing videos and other info """
-    LAYOUT_VERSION = 1
+    LAYOUT_VERSION = 2
+
+    def _init_sessions(self):
+        retries = Retry(3)
+        res = {'hololivetv': requests.Session(),
+               'hololyzernet': requests.Session()}
+        for name, session in res.items():
+            session.mount('http://', HTTPAdapter(max_retries=retries))
+            session.mount('https://', HTTPAdapter(max_retries=retries))
+
+        return res
 
     def __init__(self):
         self.lives = {}
@@ -171,6 +191,7 @@ class AutoScraper:
         self.pids = {}
         self.general_stats = {}  # for debugging
         self.init_timestamp = get_timestamp_now()
+        self.sessions = self._init_sessions()
         self.holoschedule_metachannel = Channel('holoschedule', is_metachannel=True)
         self.urllist_metachannel = Channel('urllist', is_metachannel=True)
 
@@ -227,7 +248,7 @@ class AutoScraper:
                     traceback.print_exc()
 
                 try:
-                    self.update_lives_status_hololyzer(dlog=dlog)
+                    self.update_lives_status_hololyzer_all(dlog=dlog)
                 except Exception:
                     print("warning: exception during hololyzer scrape. Network error?")
                     traceback.print_exc()
@@ -295,7 +316,7 @@ class AutoScraper:
     def update_lives_status_holoschedule(self, /, *, dlog: IO = None) -> None:
         """ Process the holoschedule, which updates on a short delay. """
         # Find all valid hyperlinks to youtube videos
-        soup = get_hololivetv_html()
+        soup = get_hololivetv_html(session=self.sessions['hololivetv'])
         newlives = 0
         oldlives = 0
         currentlives = 0
@@ -341,10 +362,15 @@ class AutoScraper:
 
         print(f'holoschedule task: took {diff:.03F} seconds')
 
-    def update_lives_status_hololyzer(self, /, *, dlog: IO = None) -> None:
+    def update_lives_status_hololyzer_all(self, /, *, dlog: IO = None) -> None:
+        """ Process hololyzer for all pages we care about """
+        for path in hololyzer_paths:
+            self.update_lives_status_hololyzer(path=path, dlog=dlog)
+
+    def update_lives_status_hololyzer(self, /, *, path: str, dlog: IO = None) -> None:
         """ Process hololyzer, which updates independly of the holoschedule. """
         # Find all valid hyperlinks to youtube videos
-        soup = get_hololyzer_html()
+        soup = get_hololyzer_html(session=self.sessions['hololyzernet'], path=path)
         newlives = 0
         oldlives = 0
         currentlives = 0
@@ -384,6 +410,7 @@ class AutoScraper:
         update_end = get_timestamp_now()
         diff = update_end - update_start
 
+        print(f'discovery for hololyzer page: {path}')
         print("discovery: hololyzer: new lives:", str(newlives))
         print("discovery: hololyzer: current lives:", str(currentlives))
         print("discovery: hololyzer: old lives:", str(oldlives))
@@ -1225,10 +1252,10 @@ class AutoScraper:
                 print(f'notice: skipping yt-dlp channel scrape (channel: {channel_id}) as time elapsed is too short ({elapsed:0.3F} < {throttle})', file=sys.stderr)
                 return
 
-        self.invoke_channel_scraper_ytdlp(channel, membership_scrape=is_membership, live_scrape=is_live_endpoint, community_scrape=community_scrape)
+        self.invoke_channel_scraper_ytdlp(channel, membership_scrape=is_membership, live_scrape=is_live_endpoint, community_scrape=community_scrape, dlog=dlog)
         self.process_channel_videos_ytdlp(channel, dlog=dlog, is_membership=is_membership, is_live_endpoint=is_live_endpoint, is_community=community_scrape)
 
-    def invoke_channel_scraper_ytdlp(self, /, channel: Channel, *, membership_scrape=False, live_scrape=False, community_scrape=False):
+    def invoke_channel_scraper_ytdlp(self, /, channel: Channel, *, membership_scrape=False, live_scrape=False, community_scrape=False, dlog: IO = None):
         """ Scrape the channel for latest videos and batch-fetch meta state. """
         # Note: some arbitrary limits are set in the helper program that may need tweaking.
         allmeta_file = "channel-cached/" + channel.channel_id + ".meta.new"
@@ -1236,6 +1263,9 @@ class AutoScraper:
         if BLOCK_WRITES:
             print('warning: yt-dlp channel scraper: cannot scrape; writes are blocked', file=sys.stderr)
             return
+
+        if dlog is None:
+            dlog = sys.stdout
 
         if not community_scrape and not membership_scrape:
             if not live_scrape:
@@ -1301,6 +1331,7 @@ class AutoScraper:
                     video.rawmeta = ytmeta.get('raw')
                     video.did_meta_flush = False
                     video.meta_flush_reason = 'new meta (yt-dlp source, channel task origin)'
+                    print(f"discovery: new live listed: {video_id} on channel {channel.channel_id} via ytdlp_metalist)", file=dlog, flush=True)
                 else:
                     if community_scrape and not membership_scrape:
                         print(f"ignoring ytmeta from channel community tab scrape (video = {video_id}, {metafile_exists = })")
@@ -1358,7 +1389,7 @@ main_autoscraper = AutoScraper()
 # is_upcoming:
 
 
-def get_hololivetv_html():
+def get_hololivetv_html(session=None):
     """ Get the latest html page of the older site's schedule """
     subprocess.run(holoscrapecmd, shell=True)
 
@@ -1373,19 +1404,28 @@ def get_hololivetv_html():
     return soup
 
 
-def get_hololyzer_html():
+def get_hololyzer_html(path, session: requests.Session = None):
     """ Get the latest html page of hololyzer's self-generated schedule """
-    subprocess.run(hololyzerscrapecmd, shell=True)
+    if not session:
+        # Barebones session with no retries, cookies or connection pooling
+        session = requests.Session()
 
-    html_doc = ''
-    with open("auto-hololyzer-realtime", "rb") as fp:
-        html_doc = fp.read()
+    try:
+        response = session.get(hololyzer_host + path)
+    except Timeout:
+        print('(htmlscrape 3p): timeout occured', file=sys.stderr)
+        return
+    except ConnectionError:
+        print('(htmlscrape 3p): connection error occured', file=sys.stderr)
+        return
+    except RequestException:
+        print('(htmlscrape 3p): a problem with the request occured', file=sys.stderr)
+        return
 
-    soup = BeautifulSoup(html_doc, 'html.parser')
-    with open("auto-hololyzer-realtime-out", "wb") as fp:
-        fp.write(soup.prettify().encode())
+    if response.status_code >= 400:
+        print(f'(htmlscrape 3p): got bad status code: {response.status_code}', file=sys.stderr)
 
-    return soup
+    return BeautifulSoup(response.text, 'html.parser')
 
 
 def get_hololivetv_api_json():
