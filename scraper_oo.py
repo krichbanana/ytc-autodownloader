@@ -1411,7 +1411,7 @@ def get_hololyzer_html(path, session: requests.Session = None):
         session = requests.Session()
 
     try:
-        response = session.get(hololyzer_host + path)
+        response = session.get(hololyzer_host + path, timeout=60)
     except Timeout:
         print('(htmlscrape 3p): timeout occured', file=sys.stderr)
         return
