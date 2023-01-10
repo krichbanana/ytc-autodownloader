@@ -623,6 +623,9 @@ class AutoScraper:
         try:
             with open(allurl_file) as urls:
                 for video_id in [f.split(" ")[0].strip() for f in urls.readlines()]:
+                    if '\x00' in video_id:
+                        print('warning: video_id corrupt: null byte detected', file=sys.stderr)
+                        continue
                     # Process each recent video
                     should_filter = False
                     word = '?'
@@ -742,6 +745,9 @@ class AutoScraper:
         try:
             with open(allurl_file) as urls:
                 for video_id in [f.split(" ")[1].strip() for f in urls.readlines()]:
+                    if '\x00' in video_id:
+                        print('warning: video_id corrupt: null byte detected', file=sys.stderr)
+                        continue
                     # Process each recent video
                     should_filter = False
                     if video_id not in self.lives:
