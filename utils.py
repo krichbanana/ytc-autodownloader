@@ -180,6 +180,29 @@ def meta_load_fast(video_id):
         print('(utils.py) could not find status file:', id_prefix, file=sys.stderr)
 
 
+def meta_load_valid(video_id):
+    id_prefix = "by-video-id/" + str(video_id)
+    if os.path.exists(id_prefix):
+        for suffix in ('.postlive', '.live', '.prelive', '.upload', ''):
+            try:
+                meta = json.load(open(id_prefix + ".meta" + suffix))
+            except FileNotFoundError:
+                continue
+
+            if 'ytmeta' not in meta:
+                print('(utils.py) warning: could not find \'ytmeta\' key in meta', file=sys.stderr)
+
+            if '_raw_player_response' in meta['ytmeta']:
+                continue
+
+            return meta
+
+        print('(utils.py) could not find valid metadata:', id_prefix, file=sys.stderr)
+
+    else:
+        print('(utils.py) could not find status file:', id_prefix, file=sys.stderr)
+
+
 def meta_load_all(video_id):
     id_prefix = "by-video-id/" + str(video_id)
     if os.path.exists(id_prefix):
