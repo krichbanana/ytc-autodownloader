@@ -740,6 +740,9 @@ class AutoScraper:
         elif is_community:
             allurl_file = "channel-cached/" + channel_id + ".url.tab.all"  # does this still work?
 
+        if not os.path.exists(allurl_file):
+            file_touch(allurl_file)
+
         channel.start_batch()
 
         try:
@@ -1281,9 +1284,6 @@ class AutoScraper:
                 print("Scraping channel /live endpoint: " + channel.channel_id)
                 subprocess.run(channellivescrapecmd + " " + channel.channel_id, shell=True)
                 allmeta_file = "channel-cached/" + channel.channel_id + ".meta.live.new"
-                # hotfix
-                file_touch(f"channel-cached/{channel.channel_id}.url.live.all")
-                file_touch(f"channel-cached/{channel.channel_id}.meta.live.new")
         elif not membership_scrape:
             print("Scraping channel community pages " + channel.channel_id)
             subprocess.run(channelpostscrapecmd + " " + channel.channel_id, shell=True)
@@ -1292,6 +1292,9 @@ class AutoScraper:
             print("Scraping channel membership pages " + channel.channel_id)
             subprocess.run(channelmemberscrapecmd + " " + channel.channel_id, shell=True)
             allmeta_file = "channel-cached/" + channel.channel_id + ".meta.mem.new"
+
+        if not os.path.exists(allmeta_file):
+            file_touch(allmeta_file)
 
         with open(allmeta_file) as allmeta:
             metalist = []
