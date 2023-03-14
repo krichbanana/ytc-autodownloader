@@ -646,7 +646,7 @@ class Downloader:
                     print('(downloader) Removed video detected, giving up:', video_id, f'(message: {e.args[0]})')
 
                     if not paranoid_retry:
-                        aborted = True
+                        max_retries = max(max_retries, 60)
 
                         progress = 'abort:removal'
                         if progress != last_progress:
@@ -659,7 +659,7 @@ class Downloader:
                             self.write_current_progress(curr_status=ytstatus, curr_progress=progress)
                             last_progress = progress
 
-                    break
+                        break
 
                 except ChatDisabled:
                     if not paranoid_retry:
