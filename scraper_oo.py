@@ -98,12 +98,16 @@ hololyzerscrapecmd = 'wget -nv https://www.hololyzer.net/youtube/realtime/ -O au
 hololyzer_host = 'https://www.hololyzer.net'
 hololyzer_paths = ('/youtube/realtime/', '/holostars/realtime/')
 holoscrape_api_cmd = "wget -nv https://schedule.hololive.tv/api/list/1 -O - | jq '[.dateGroupList|.[]|.videoList|.[]|{datetime,isLive,platformType,url,title,name}|select(.platformType == 1)]' >| auto-lives_filt.json"
+DEFAULT_ALLURL_FILE = 'video_ids.txt'
 
 
 meta_lastresort_keys = {'_raw_player_response', '_raw_info_dict'}
 
 # For alt-main usage
 is_true_main = True
+
+# For signal-triggered video load
+has_urgent_data = False
 
 
 def file_touch(path):
@@ -479,7 +483,7 @@ class AutoScraper:
 
         print(f'holoschedule (api) task: took {diff:.03F} seconds')
 
-    def update_lives_status_urllist(self, *, dlog: IO = None):
+    def update_lives_status_urllist(self, *, urllist_file: str = None, urgent: bool = False, dlog: IO = None):
         """ Process a url file (currently only supports raw video IDs)
             Can be called standalone.
         """
@@ -497,7 +501,10 @@ class AutoScraper:
 
         update_start = get_timestamp_now()
 
-        self.process_urllist_videos(channel=ch, dlog=dlog)
+        self.process_urllist_videos(channel=ch, allurl_file=urllist_file, dlog=dlog)
+        if urgent:
+            for video in self.lives.values():
+                process_one_status(video, context=self)
 
         update_end = get_timestamp_now()
         diff = update_end - update_start
@@ -539,6 +546,8 @@ class AutoScraper:
                         self.scrape_and_process_channel(channel_id=channel_id, dlog=dlog, throttle=throttle, live_throttle=live_throttle)
                         if SUPERVERBOSE:
                             set_log_level('warning')
+
+                        check_urgent_data(self)
 
         except Exception:
             print(f"warning: unexpected error with processing {channels_file}", file=sys.stderr)
@@ -606,7 +615,7 @@ class AutoScraper:
 
         return (cache_miss, False)
 
-    def process_urllist_videos(self, /, channel: Channel, *, dlog: IO = None, is_membership=False) -> None:
+    def process_urllist_videos(self, /, channel: Channel, *, allurl_file: str = None, dlog: IO = None, is_membership=False) -> None:
         """ Read user-specified video ID list, process each video ID, and persist the meta state. """
         if dlog is None:
             dlog = sys.stdout
@@ -616,7 +625,8 @@ class AutoScraper:
         numignores: Dict = {}
         channel.did_discovery_print = True
 
-        allurl_file = "video_ids.txt"
+        allurl_file = allurl_file or DEFAULT_ALLURL_FILE
+        file_touch(allurl_file)
 
         channel.start_batch()
 
@@ -2563,6 +2573,37 @@ def dump_misc(context: AutoScraper, *, dest_dir=DUMP_DIR):
         print("CHANNEL_SCRAPE_LIMIT=" + str(CHANNEL_SCRAPE_LIMIT), file=fp)
 
 
+def check_urgent_data(context: AutoScraper):
+    global has_urgent_data
+    if has_urgent_data:
+        has_urgent_data = False
+    else:
+        return
+
+    if is_true_main:
+        urllist_file = 'main_input.txt'
+    else:
+        urllist_file = 'alt_input.txt'
+
+    try:
+        print('notice: processing urgent data.')
+        context.update_lives_status_urllist(urllist_file=urllist_file, urgent=True)
+    except Exception:
+        print('warning: exception during urgent urllist scrape. Network error?')
+        traceback.print_exc()
+
+
+def handle_urgent_data_signal(signum, frame):
+    if os.getpid() != mainpid:
+        if is_true_main:
+            print('warning: got urgent data signal, but mainpid doesn\'t match', file=sys.stderr)
+            return
+
+    global has_urgent_data
+    has_urgent_data = True
+    print('notice: acknowleged urgent data signal.')
+
+
 def handle_debug_signal(signum, frame):
     if os.getpid() != mainpid:
         if is_true_main:
@@ -2763,7 +2804,9 @@ def alt_main(context: AutoScraper):
     print("Starting alt-main loop", flush=True)
     while True:
         try:
-            time.sleep(SCRAPER_SLEEP_INTERVAL)
+            for i in range(SCRAPER_SLEEP_INTERVAL):
+                time.sleep(1)
+                check_urgent_data(context)
 
             print("doing scrape task. date:", dt.datetime.now())
             main_scrape_task(context=context)
@@ -2812,6 +2855,7 @@ def main(context: AutoScraper):
 
     signal.signal(signal.SIGUSR1, handle_special_signal)
     signal.signal(signal.SIGUSR2, handle_debug_signal)
+    signal.signal(signal.SIGHUP, handle_urgent_data_signal)
 
     # For cookied downloads
     if ENABLE_ALTMAIN:
@@ -2866,9 +2910,13 @@ def main(context: AutoScraper):
             if fast_startup:
                 fast_startup = False
                 print("reducing initial loop delay", flush=True)
-                time.sleep(5)
+                for i in range(5):
+                    time.sleep(1)
+                    check_urgent_data(context)
             else:
-                time.sleep(SCRAPER_SLEEP_INTERVAL)
+                for i in range(SCRAPER_SLEEP_INTERVAL):
+                    time.sleep(1)
+                    check_urgent_data(context)
 
             print("doing scrape task. date:", dt.datetime.now())
             main_scrape_task(context=context)
