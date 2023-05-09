@@ -2239,7 +2239,7 @@ def invoke_downloader(video: Video, *, context: AutoScraper):
             dlpid_ok = check_pid(dlpid)
             print("warning: duplicate invocation for video " + video_id + f" (according to internal PID state. alive? pypid: {pypid}, {pypid_ok}; dlpid: {dlpid}, {dlpid_ok})", file=sys.stderr)
             if pypid_ok and dlpid_ok:
-                print("warning:   cancelling invocation for video " + video_id + " (both pypid and dlpid present). status: {video.status}; progress: {video.progress}", file=sys.stderr)
+                print("warning:   cancelling invocation for video " + video_id + f" (both pypid and dlpid present). status: {video.status}; progress: {video.progress}", file=sys.stderr)
                 if video.progress == 'waiting':
                     video.set_progress('downloading')
                 return
