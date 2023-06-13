@@ -32,6 +32,12 @@ from utils import (
 
 from notify import notify_send
 
+try:
+    from chat_tools import chat_callback
+    print('imported chat message callback', file=sys.stderr)
+except ImportError:
+    def chat_callback(chat, message) -> None:
+        return
 
 try:
     from cookie_control import check_cookies_allowed
@@ -554,6 +560,7 @@ class Downloader:
                                 self.message_count = num_msgs
                                 # print the formatted message
                                 safe_print(chat.format(message), out=fp)
+                                chat_callback(chat, message)
                                 fp.flush()
                                 # performance check
                                 currtime = dt.datetime.now()
