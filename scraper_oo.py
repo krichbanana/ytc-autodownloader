@@ -2588,6 +2588,8 @@ def check_urgent_data(context: AutoScraper):
     try:
         print('notice: processing urgent data.')
         context.update_lives_status_urllist(urllist_file=urllist_file, urgent=True)
+        process_dlpid_queue(context=context)
+        print('notice: finished processing urgent data.')
     except Exception:
         print('warning: exception during urgent urllist scrape. Network error?')
         traceback.print_exc()
