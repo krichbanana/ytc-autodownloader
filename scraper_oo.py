@@ -47,10 +47,6 @@ from utils import (
     get_utc_timestamp_now as get_timestamp_now,
     extract_video_id_from_yturl,
     json_stream_wrapper,
-    meta_load_fast,
-    meta_extract_start_timestamp,
-    meta_extract_end_timestamp,
-    meta_extract_raw_live_status
 )
 from video import (
     BaseVideo,

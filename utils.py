@@ -77,10 +77,10 @@ def _test_file_lock():
     longtask.join()
     shorttask.join()
     os.remove(file)
-    assert(longtask.exitcode == 0)
-    assert(shorttask.exitcode == 0)
+    assert (longtask.exitcode == 0)
+    assert (shorttask.exitcode == 0)
     end = time.perf_counter()
-    assert(end - start >= 4.0)
+    assert (end - start >= 4.0)
 
 
 def _locktasklong(file):
