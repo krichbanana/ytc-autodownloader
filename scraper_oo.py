@@ -479,7 +479,7 @@ class AutoScraper:
 
         print(f'holoschedule (api) task: took {diff:.03F} seconds')
 
-    def update_lives_status_urllist(self, *, urllist_file: str = None, urgent: bool = False, dlog: IO = None):
+    def update_lives_status_urllist(self, *, urllist_file: str = None, urgent: bool = False, cookied: bool = False, dlog: IO = None):
         """ Process a url file (currently only supports raw video IDs)
             Can be called standalone.
         """
@@ -497,7 +497,7 @@ class AutoScraper:
 
         update_start = get_timestamp_now()
 
-        self.process_urllist_videos(channel=ch, allurl_file=urllist_file, dlog=dlog)
+        self.process_urllist_videos(channel=ch, allurl_file=urllist_file, dlog=dlog, is_membership=cookied)
         if urgent:
             for video in self.lives.values():
                 process_one_status(video, context=self)
@@ -2583,7 +2583,7 @@ def check_urgent_data(context: AutoScraper):
 
     try:
         print('notice: processing urgent data.')
-        context.update_lives_status_urllist(urllist_file=urllist_file, urgent=True)
+        context.update_lives_status_urllist(urllist_file=urllist_file, urgent=True, cookied=(not is_true_main))
         process_dlpid_queue(context=context)
         print('notice: finished processing urgent data.')
     except Exception:
@@ -2595,6 +2595,9 @@ def handle_urgent_data_signal(signum, frame):
     if os.getpid() != mainpid:
         if is_true_main:
             print('warning: got urgent data signal, but mainpid doesn\'t match', file=sys.stderr)
+            return
+        elif os.getpid() != altpid:
+            print('warning: got urgent data signal, but altpid doesn\'t match', file=sys.stderr)
             return
 
     global has_urgent_data
@@ -2781,6 +2784,7 @@ def alt_main(context: AutoScraper):
     # In case we are called directly. Test program won't handle this properly.
     # signal.signal(signal.SIGUSR1, handle_special_signal)
     signal.signal(signal.SIGUSR2, handle_debug_signal)
+    signal.signal(signal.SIGHUP, handle_urgent_data_signal)
     # Alt-main hacks here
     print("date:", dt.datetime.now())
     context.update_lives_status()
