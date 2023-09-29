@@ -598,6 +598,13 @@ class Downloader:
                             self.write_current_progress(curr_status=ytstatus, curr_progress=progress)
                             last_progress = progress
 
+                    elif ytstatus != "upcoming":
+                        private = True
+                        progress = 'retrywait:private'
+                        if progress != last_progress:
+                            self.write_current_progress(curr_status=ytstatus, curr_progress=progress)
+                            last_progress = progress
+
                     else:
                         break
 
