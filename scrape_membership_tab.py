@@ -28,6 +28,8 @@ def get_channelbase(channelbase):
             sys.exit(1)
 
 
+authcheck_skip='--extractor-args youtubetab:skip=webpage,authcheck'
+
 channelbase = get_channelbase(sys.argv[1])
 
 suf_membership = "/membership"
@@ -54,6 +56,24 @@ def install_cookies():
     if not os.path.exists(f"cookies/{channelbase}.cookies"):
         print("(channel membership tab scraper) cookies not found, how are we going to get membership videos now?", file=sys.stderr)
         sys.exit(1)
+
+
+saved_entry = None
+def lookup_channel_entry(channelbase: str):
+    global saved_entry
+    if not saved_entry:
+        try:
+            with open('channels-cookied.txt') as fp:
+                for line in fp.readlines():
+                    if channelbase in line:
+                        saved_entry = line.strip()
+                        break
+                else:
+                    print(f'could not match channelbase {channelbase}')
+        except OSError:
+            print('error reading channel list', file=sys.stderr)
+            pass
+    return saved_entry
 
 
 cookie_file = f"cookies/{channelbase}.cookies"
@@ -94,8 +114,10 @@ write_time_to_file(f'{next_scrape_file}', next_time)
 # Note that if cookies are bad, a redirection may occur.
 url = f"https://www.youtube.com/channel/{channelbase}{suf_membership}"
 
+print("Channel entry:", lookup_channel_entry(channelbase))
+
 # Get raw data on membership videos from membership tab
-command_to_run = f'"{ytdlp_cmd}" -s -q -j --cookies="{cookie_file}" --sleep-requests 0.1 --extractor-retries 1 --ignore-no-formats-error --flat-playlist -- "{url}" >"{tmppre}.membership"'
+command_to_run = f'"{ytdlp_cmd}" -s -q -j --cookies="{cookie_file}" --sleep-requests 0.1 --extractor-retries 1 --ignore-no-formats-error --flat-playlist {authcheck_skip} -- "{url}" >"{tmppre}.membership"'
 proc = subprocess.run(command_to_run, shell=True)
 curr_time = int(get_timestamp_now())  # epoch time (seconds)
 if proc.returncode != 0:
@@ -115,7 +137,7 @@ if file_empty(f"{tmppre}.membership.url"):
     print('(channel membership tab scraper) no membership videos on membership tab, trying community tab')
 
     # Get raw data on videos from community tab (no cookies sent)
-    proc = subprocess.run(f'"{ytdlp_cmd}" -s -q -j --sleep-requests 0.1 --ignore-no-formats-error --flat-playlist "{url}" >"{tmppre}.community.nocookies"', shell=True)
+    proc = subprocess.run(f'"{ytdlp_cmd}" -s -q -j --sleep-requests 0.1 --ignore-no-formats-error --flat-playlist {authcheck_skip} "{url}" >"{tmppre}.community.nocookies"', shell=True)
     curr_time = int(get_timestamp_now())  # epoch time (seconds)
     if proc.returncode != 0:
         print(f"(channel membership tab scraper) warning: fetch for {tmppre} (community tab, no cookies) exited with error: {proc.returncode}", file=sys.stderr)
@@ -128,7 +150,7 @@ if file_empty(f"{tmppre}.membership.url"):
         print(f"(channel membership tab scraper) error: processing {tmppre}.community.nocookies (community tab) exited with error: {proc.returncode}", file=sys.stderr)
 
     # Get raw data on videos from community tab (cookies sent)
-    proc = subprocess.run(f'"{ytdlp_cmd}" -s -q -j --cookies="{cookie_file}" --sleep-requests 0.1 --ignore-no-formats-error --flat-playlist "{url}" >"{tmppre}.community.withcookies"', shell=True)
+    proc = subprocess.run(f'"{ytdlp_cmd}" -s -q -j --cookies="{cookie_file}" --sleep-requests 0.1 --ignore-no-formats-error --flat-playlist {authcheck_skip} "{url}" >"{tmppre}.community.withcookies"', shell=True)
     curr_time = int(get_timestamp_now())  # epoch time (seconds)
     if proc.returncode != 0:
         print(f"(channel membership tab scraper) warning: fetch for {tmppre} (community tab, with cookies) exited with error: {proc.returncode}", file=sys.stderr)
@@ -176,14 +198,14 @@ shutil.move(f"channel-cached/{channelbase}.url.mem.all.tmp", f"channel-cached/{c
 oldcnt = file_linecount(f'channel-cached/{channelbase}.url.mem.all')
 # 20 limit to prevent processing way too many videos (beware of pointless m3u8 requests)
 if not file_empty(f"{tmppre}.membership.url"):
-    proc = subprocess.run(f'"{ytdlp_cmd}" -s -q -j --cookies="{cookie_file}" --ignore-no-formats-error --force-write-archive --download-archive "channel-cached/{channelbase}.url.mem.all" --max-downloads 20 -a - < <(grep -vE /channel/ "{tmppre}.membership.url") > "channel-cached/{channelbase}.meta.mem.new"', shell=True)
+    proc = subprocess.run(f'"{ytdlp_cmd}" -s -q -j --cookies="{cookie_file}" --ignore-no-formats-error --force-write-archive --download-archive "channel-cached/{channelbase}.url.mem.all" --max-downloads 20 {authcheck_skip} -a - < <(grep -vE /channel/ "{tmppre}.membership.url") > "channel-cached/{channelbase}.meta.mem.new"', shell=True)
     if proc.returncode != 0:
         print(f"(channel membership tab scraper) error: meta fetch with download archive and scraped membership urls failed with error: {proc.returncode}", file=sys.stderr)
         sys.exit(1)
 else:
     print("(channel membership tab scraper) no urls...", file=sys.stderr)
 if not file_empty(f"{channelbase}.list.url"):
-    proc = subprocess.run(f'"{ytdlp_cmd}" -s -q -j --cookies="{cookie_file}" --ignore-no-formats-error --force-write-archive --download-archive "channel-cached/{channelbase}.url.mem.all" --max-downloads 20 -a - < <(grep -vE /channel/ "{channelbase}.list.url") >> "channel-cached/{channelbase}.meta.mem.new"', shell=True)
+    proc = subprocess.run(f'"{ytdlp_cmd}" -s -q -j --cookies="{cookie_file}" --ignore-no-formats-error --force-write-archive --download-archive "channel-cached/{channelbase}.url.mem.all" --max-downloads 20 {authcheck_skip} -a - < <(grep -vE /channel/ "{channelbase}.list.url") >> "channel-cached/{channelbase}.meta.mem.new"', shell=True)
     if proc.returncode != 0:
         print(f"(channel membership tab scraper) error: meta fetch with download archive and urllist failed with error: {proc.returncode}", file=sys.stderr)
         sys.exit(1)
