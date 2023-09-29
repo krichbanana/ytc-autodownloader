@@ -45,6 +45,7 @@ from utils import (
     check_pid,
     get_commit,
     get_utc_timestamp_now as get_timestamp_now,
+    get_start_timestamp,
     extract_video_id_from_yturl,
     json_stream_wrapper,
 )
@@ -56,6 +57,10 @@ from video import (
 )
 from channel import (
     BaseChannel
+)
+
+from clock import (
+    Clock
 )
 
 
@@ -184,6 +189,13 @@ class AutoScraper:
 
         return res
 
+    def _init_clock(self):
+        clock = Clock()
+        clock.set_target_time(get_timestamp_now())
+        clock.set_step(1800)
+
+        return clock
+
     def __init__(self):
         self.lives = {}
         self.channels = {}
@@ -192,6 +204,7 @@ class AutoScraper:
         self.general_stats = {}  # for debugging
         self.init_timestamp = get_timestamp_now()
         self.sessions = self._init_sessions()
+        self.clock = self._init_clock()
         self.holoschedule_metachannel = Channel('holoschedule', is_metachannel=True)
         self.urllist_metachannel = Channel('urllist', is_metachannel=True)
 
@@ -1859,6 +1872,10 @@ def persist_ytmeta(video: Video, *, fresh=False, clobber=True):
     video.meta_flush_reason = 'no reason set'
 
 
+def check_video_id(context, video_id):
+    recall_video(video_id, context=context, filter_progress=True, disk_only=False)
+
+
 # TODO: replace recall_meta with recall_video
 def recall_video(video_id: str, *, context: AutoScraper, filter_progress=False, id_source=None, referrer_channel_id=None, disk_only=False):
     """ Read status, progress for video_id.
@@ -2569,6 +2586,25 @@ def dump_misc(context: AutoScraper, *, dest_dir=DUMP_DIR):
         print("CHANNEL_SCRAPE_LIMIT=" + str(CHANNEL_SCRAPE_LIMIT), file=fp)
 
 
+def check_videos(context: AutoScraper):
+    for video in context.lives.values():
+        if video.status == "error":
+            start_timestamp = get_start_timestamp(video.video_id, video.meta)
+            if not start_timestamp:
+                continue
+            if start_timestamp >= get_timestamp_now() - 3600:  # hopefully videos have started after an hour if unprivated
+                try:
+                    check_video_id(context, video.video_id)
+                    video.reset_progress()
+                    maybe_rescrape(video, context=context)
+                    process_one_status(video, context=context, first=False)
+                except ChatDownloaderError:
+                    print('warning: video check: error from chat_downloader.', file=sys.stderr)
+                except OSError:
+                    print('error: video check: error from the OS.', file=sys.stderr)
+                    raise
+
+
 def check_urgent_data(context: AutoScraper):
     global has_urgent_data
     if has_urgent_data:
@@ -2582,6 +2618,8 @@ def check_urgent_data(context: AutoScraper):
         urllist_file = 'alt_input.txt'
 
     try:
+        time.sleep(0.01)  # avoid interactions with the signal handler. fix this sometime...
+        context.clock.tick(lambda: check_videos(context))
         print('notice: processing urgent data.')
         context.update_lives_status_urllist(urllist_file=urllist_file, urgent=True, cookied=(not is_true_main))
         process_dlpid_queue(context=context)
