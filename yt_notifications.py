@@ -3,7 +3,7 @@ from yt_dlp.utils import traverse_obj
 import json
 from yt_dlp.utils import ExtractorError
 from yt_dlp import YoutubeDL
-from yt_dlp.extractor import YoutubeBaseInfoExtractor
+from yt_dlp.extractor.youtube import YoutubeBaseInfoExtractor
 import sys
 import os
 import time
