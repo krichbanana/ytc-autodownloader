@@ -97,6 +97,13 @@ watchdogprog = "../watchdog.sh"
 holoscrapecmd = 'wget -nv --load-cookies=../cookies-schedule-hololive-tv.txt https://schedule.hololive.tv/lives -O auto-lives_tz'
 hololyzerscrapecmd = 'wget -nv https://www.hololyzer.net/youtube/realtime/ -O auto-hololyzer-realtime'
 hololyzer_host = 'https://www.hololyzer.net'
+holodex_host = 'https://holodex.net'
+hololyzer_paths = ('/youtube/realtime/', '/holostars/realtime/')
+holoscrape_api_cmd = "wget -nv https://schedule.hololive.tv/api/list/1 -O - | jq '[.dateGroupList|.[]|.videoList|.[]|{datetime,isLive,platformType,url,title,name}|select(.platformType == 1)]' >| auto-lives_filt.json"
+DEFAULT_ALLURL_FILE = 'video_ids.txt'
+
+
+meta_lastresort_keys = {'_raw_player_response', '_raw_info_dict'}
 hololyzer_paths = ('/youtube/realtime/', '/holostars/realtime/')
 holoscrape_api_cmd = "wget -nv https://schedule.hololive.tv/api/list/1 -O - | jq '[.dateGroupList|.[]|.videoList|.[]|{datetime,isLive,platformType,url,title,name}|select(.platformType == 1)]' >| auto-lives_filt.json"
 DEFAULT_ALLURL_FILE = 'video_ids.txt'
@@ -192,7 +199,7 @@ class AutoScraper:
     def _init_clock(self):
         clock = Clock()
         clock.set_target_time(get_timestamp_now())
-        clock.set_step(1800)
+        clock.set_step(3600)
 
         return clock
 
@@ -264,6 +271,12 @@ class AutoScraper:
                     self.update_lives_status_hololyzer_all(dlog=dlog)
                 except Exception:
                     print("warning: exception during hololyzer scrape. Network error?")
+                    traceback.print_exc()
+
+                try:
+                    pass #self.update_lives_status_holodex_api(dlog=dlog)
+                except Exception:
+                    print("warning: exception during holodex scrape. Network error?")
                     traceback.print_exc()
 
                 self.holoschedule_metachannel.end_batch()
@@ -491,6 +504,71 @@ class AutoScraper:
         print("discovery: holoschedule (api): old lives:", str(oldlives))
 
         print(f'holoschedule (api) task: took {diff:.03F} seconds')
+
+    def update_lives_status_holodex_api(self, /, *, dlog: IO = None) -> None:
+        """ Get holodex json via internal API """
+        jsonlist = get_holodex_api_json(holodex_host)
+        newlives = 0
+        oldlives = 0
+        currentlives = 0
+
+        if dlog is None:
+            dlog = sys.stdout
+
+        rescrape_queue = []
+
+        update_start = get_timestamp_now()
+
+        for video_info in jsonlist:
+            # Extract any link
+            video_id = video_info.get('id')
+            status = video_info.get('status')
+
+            if video_id is None:
+                continue
+
+            if status not in ('live', 'upcoming'):
+                continue
+
+            if video_id not in self.lives:
+                should_filter = should_filter_video(video_id)
+                if should_filter:
+                    # filter_progress excluded meta, which means we don't keep to keep this video around.
+                    oldlives += 1
+                    continue
+
+                recall_video(video_id, context=self, filter_progress=True, id_source='holodex:disk', disk_only=True)
+
+            video = self.get_or_init_video(video_id, id_source='holodex')
+            if video.progress == 'unscraped':
+                print(f"discovery: (api) new live listed (status: {status}):", video_id, file=dlog, flush=True)
+                if dlog != sys.stdout:
+                    print(f"discovery: (api) new live listed (status: {status}):", video_id, file=sys.stdout, flush=True)
+                newlives += 1
+            else:
+                # known (not new) and current (not old) live listed
+                currentlives += 1
+                if status == 'live' and video.status == 'prelive':
+                    rescrape_queue.append(video)
+
+        for video in rescrape_queue:
+            if video.status == 'prelive':
+                # get the ytmeta as of the moment it went live.
+                print('holodex update task: prelive video is said to be live, rescraping to update status:', video.video_id)
+                rescrape_chatdownloader(video)
+                # important, or else next recall_video() will revert the status!
+                persist_basic_state(video, context=self, clobber=True, clobber_pid=False)
+                if not video.did_meta_flush:
+                    persist_ytmeta(video, fresh=True, clobber=True)
+
+        update_end = get_timestamp_now()
+        diff = update_end - update_start
+
+        print("discovery: holodex: new lives:", str(newlives))
+        print("discovery: holodex: current lives:", str(currentlives))
+        print("discovery: holodex: old lives:", str(oldlives))
+
+        print(f'holodex task: took {diff:.03F} seconds')
 
     def update_lives_status_urllist(self, *, urllist_file: str = None, urgent: bool = False, cookied: bool = False, dlog: IO = None):
         """ Process a url file (currently only supports raw video IDs)
@@ -1454,6 +1532,42 @@ def get_hololyzer_html(path, session: requests.Session = None):
         print(f'(htmlscrape 3p): got bad status code: {response.status_code}', file=sys.stderr)
 
     return BeautifulSoup(response.text, 'html.parser')
+
+
+def get_holodex_api_json(path, session: requests.Session = None):
+    """ Get the latest JSON API result from holodex (used for main page) """
+    if not session:
+        # Barebones session with no retries, cookies or connection pooling
+        session = requests.Session()
+
+    try:
+        session.headers['Sec-Fetch-Site'] = 'same-origin'
+        session.headers['Accept'] = 'application/json'
+        response = session.get(holodex_host + '/api/v2/live?type=placeholder,stream&include=mentions&org=Hololive', timeout=60)
+        print('until ratelimit:', response.headers.get('X-Ratelimit-Remaining'))
+        ts = int(response.headers.get('X-Ratelimit-Reset'))
+        print('until ratelimit reset:', dt.datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S'))
+    except Timeout:
+        print('(holodex): timeout occured', file=sys.stderr)
+        return
+    except ConnectionError:
+        print('(holodex): connection error occured', file=sys.stderr)
+        return
+    except RequestException:
+        print('(holodex): a problem with the request occured', file=sys.stderr)
+        return
+    except RuntimeError:
+        print('(holodex): a problem with the request processing occured', file=sys.stderr)
+        return
+
+    if response.status_code >= 400:
+        print(f'(holodex): got bad status code: {response.status_code}', file=sys.stderr)
+
+    try:
+        return json.loads(response.text)
+    except json.JSONDecodeError:
+        print('(holodex): failed to decode json', file=sys.stderr)
+        return []
 
 
 def get_hololivetv_api_json():
@@ -2595,6 +2709,7 @@ def check_videos(context: AutoScraper):
             if start_timestamp >= get_timestamp_now() - 3600:  # hopefully videos have started after an hour if unprivated
                 try:
                     check_video_id(context, video.video_id)
+                    video._update_recheck_counter()
                     video.reset_progress()
                     maybe_rescrape(video, context=context)
                     process_one_status(video, context=context, first=False)
@@ -2619,9 +2734,11 @@ def check_urgent_data(context: AutoScraper):
 
     try:
         time.sleep(0.01)  # avoid interactions with the signal handler. fix this sometime...
-        context.clock.tick(lambda: check_videos(context))
         print('notice: processing urgent data.')
         context.update_lives_status_urllist(urllist_file=urllist_file, urgent=True, cookied=(not is_true_main))
+        process_dlpid_queue(context=context)
+        print('notice: processing recheck queue data.')
+        context.clock.tick(lambda: check_videos(context))
         process_dlpid_queue(context=context)
         print('notice: finished processing urgent data.')
     except Exception:

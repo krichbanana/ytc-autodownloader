@@ -42,6 +42,7 @@ class BaseVideo:
         self.next_event_check = 0
         self.create_counter = {}
         self.overwrite_counter = {}
+        self.recheck_counter = 0
 
     def set_status(self, status: str):
         """ Set the online status (live progress) of a video
@@ -128,6 +129,11 @@ class BaseVideo:
         self.did_progress_print = False
         self.progress_flush_reason = f'progress reset: {self.progress} -> unscraped'
         self.progress = 'unscraped'
+
+    def _update_recheck_counter(self):
+        """ debug counter to check meta recheck counts """
+        self.recheck_counter = getattr(self, 'recheck_counter', 0)
+        self.recheck_counter = self.recheck_counter.setdefault(name, 0) + 1
 
     def _update_create_counter(self, name: str):
         """ debug counter to check meta creation counts """
