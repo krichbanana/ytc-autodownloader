@@ -133,7 +133,7 @@ class BaseVideo:
     def _update_recheck_counter(self):
         """ debug counter to check meta recheck counts """
         self.recheck_counter = getattr(self, 'recheck_counter', 0)
-        self.recheck_counter = self.recheck_counter.setdefault(name, 0) + 1
+        self.recheck_counter = self.recheck_counter + 1
 
     def _update_create_counter(self, name: str):
         """ debug counter to check meta creation counts """
