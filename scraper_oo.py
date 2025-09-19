@@ -84,6 +84,7 @@ CHANNEL_SCRAPE_LIMIT = 24  # new pagination size is 12, judging from the UI
 DUMP_DIR = 'dump'
 DUMP_DIR_ALT = 'dump_alt'
 SUPERVERBOSE = True
+GENERAL_COOKIES = True
 
 
 downloadmetacmd = "../yt-dlp/yt-dlp.sh -s -q -j --ignore-no-formats-error "
@@ -342,6 +343,7 @@ class AutoScraper:
     def update_lives_status_holoschedule(self, /, *, dlog: IO = None) -> None:
         """ Process the holoschedule, which updates on a short delay. """
         # Find all valid hyperlinks to youtube videos
+        print("hololive.tv (html)...", file=sys.stderr)
         soup = get_hololivetv_html(session=self.sessions['hololivetv'])
         newlives = 0
         oldlives = 0
@@ -396,6 +398,7 @@ class AutoScraper:
     def update_lives_status_hololyzer(self, /, *, path: str, dlog: IO = None) -> None:
         """ Process hololyzer, which updates independly of the holoschedule. """
         # Find all valid hyperlinks to youtube videos
+        print("hololyzer.net (html)...", file=sys.stderr)
         soup = get_hololyzer_html(session=self.sessions['hololyzernet'], path=path)
         newlives = 0
         oldlives = 0
@@ -444,6 +447,7 @@ class AutoScraper:
         print(f'hololyzer task: took {diff:.03F} seconds')
 
     def update_lives_status_holoschedule_api(self, /, *, dlog: IO = None) -> None:
+        print("hololive.tv (api...)", file=sys.stderr)
         jsonlist = get_hololivetv_api_json()
         newlives = 0
         oldlives = 0
@@ -507,6 +511,7 @@ class AutoScraper:
 
     def update_lives_status_holodex_api(self, /, *, dlog: IO = None) -> None:
         """ Get holodex json via internal API """
+        print("holodex.net (webapi...)", file=sys.stderr)
         jsonlist = get_holodex_api_json(holodex_host)
         newlives = 0
         oldlives = 0
@@ -574,6 +579,7 @@ class AutoScraper:
         """ Process a url file (currently only supports raw video IDs)
             Can be called standalone.
         """
+        print("urllist...", file=sys.stderr)
         try:
             ch = self.urllist_metachannel
         except AttributeError:
@@ -599,6 +605,7 @@ class AutoScraper:
 
     def update_lives_status_channellist(self, *, dlog: IO = None, is_membership=False) -> None:
         """ Read channels.txt for a list of channel IDs to process. """
+        print("channellist...", file=sys.stderr)
         if dlog is None:
             dlog = sys.stdout
 
@@ -1592,6 +1599,9 @@ def rescrape_chatdownloader(video: Video, *, channel=None, youtube=None, cookies
         if elapsed < throttle:
             print(f'warning: throttling scrape for video {video_id} ({elapsed:0.6F} < {throttle})', file=sys.stderr)
             return
+
+    if not cookies and GENERAL_COOKIES:
+        cookies = 'cookies.txt'
 
     video_data, player_response, status = invoke_scraper_chatdownloader(video_id, youtube=youtube, skip_status=False, cookies=cookies)
 
