@@ -2419,6 +2419,7 @@ def invoke_downloader(video: Video, *, context: AutoScraper):
             }
             fp.write(json.dumps(res, indent=2))
 
+        print(f'(MAIN GC) collected {gc.collect()} objects')
         gc.freeze()
         p = mp.Process(target=_invoke_downloader_start, args=(q, video_id, outfile))
         p.start()
@@ -2442,28 +2443,33 @@ def start_watchdog():
 def _invoke_downloader_start(q, video_id, outfile):
     # There is not much use for the python pid, we store the process ID only for debugging
     pid = os.getpid()
-    print("process fork " + str(pid) + " is live, with outfile " + outfile)
-    proc = subprocess.Popen([downloadchatprgm, outfile, video_id])
+    print("process fork " + str(pid) + " is going live, with outfile " + outfile)
+    # second param is proc.pid, but we exec directly now.
+    q.put((pid, pid, video_id))
 
-    q.put((pid, proc.pid, video_id))
     # Close the queue to flush it and avoid blocking the python process on exit.
     time.sleep(0.1)
     try:
         q.close()
     except AttributeError:
         pass  # older python versions (pre-3.9) lack close()
+
+    time.sleep(0.5)
+
     # Block this fork (hopefully not the main process)
     try:
-        # fix potential memory leak
-        global main_autoscraper
-        main_autoscraper = None
-        print(f'(FORK GC) collected {gc.collect()} objects')
+        print("process fork " + str(pid) + " about to become downloader (video: " + video_id + ")")
+        sys.stdout.flush()
+        os.execv(downloadchatprgm, [downloadchatprgm, outfile, video_id])
 
-        proc.wait()
-        print("process fork " + str(pid) + " has waited (video: " + video_id + ")")
+    except OSError:
+        print("process fork " + str(pid) + " failed to exec downloader (video: " + video_id + ")",
+              file=sys.stderr)
     except KeyboardInterrupt:
         print("process fork " + str(pid) + " was interrupted (video: " + video_id + ")")
         raise KeyboardInterrupt from None
+
+    # we've flushed, right?
     sys.exit()
 
 
